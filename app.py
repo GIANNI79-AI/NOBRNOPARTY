@@ -296,24 +296,68 @@ def level_zone_text(center, width):
 
 
 
-def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.78, 0.22])
 
-    fig.add_trace(go.Candlestick(
-        x=df["Date"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        name="Prezzo",
-        increasing_line_color="#00E676", decreasing_line_color="#FF4B4B",
-        increasing_fillcolor="#00E676", decreasing_fillcolor="#FF4B4B"
-    ), row=1, col=1)
+def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
+    """
+    V7 - Grafico TradingView pulito:
+    - Prezzo
+    - VWAP
+    - EMA 60
+    - una Supply principale
+    - una Demand principale
+    - BREAK / Entry / Stop / TP1 / TP2 con frecce leggibili
+    - Volumi verdi e rossi
+    """
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.035,
+        row_heights=[0.78, 0.22]
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=df["Date"],
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name="Prezzo",
+            increasing_line_color="#00E676",
+            decreasing_line_color="#FF4B4B",
+            increasing_fillcolor="#00E676",
+            decreasing_fillcolor="#FF4B4B",
+            line=dict(width=1.1),
+        ),
+        row=1, col=1
+    )
+
+    # Solo 2 guide: VWAP + EMA60
+    if "VWAP" in df:
+        fig.add_trace(
+            go.Scatter(
+                x=df["Date"],
+                y=df["VWAP"],
+                name="VWAP",
+                line=dict(width=2.0, color="#38BDF8")
+            ),
+            row=1, col=1
+        )
 
     if "EMA60" in df:
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["EMA60"], name="EMA 60", line=dict(width=1.8, color="#A855F7")), row=1, col=1)
-    if "VWAP" in df:
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["VWAP"], name="VWAP", line=dict(width=1.8, color="#38BDF8")), row=1, col=1)
+        fig.add_trace(
+            go.Scatter(
+                x=df["Date"],
+                y=df["EMA60"],
+                name="EMA 60",
+                line=dict(width=2.0, color="#A855F7")
+            ),
+            row=1, col=1
+        )
 
     price = float(df["Close"].iloc[-1])
     atr_last = float(df["ATR"].iloc[-1]) if "ATR" in df and pd.notna(df["ATR"].iloc[-1]) else price * 0.004
-    zone_w = max(atr_last * 0.25, price * 0.0012)
+    zone_w = max(atr_last * 0.22, price * 0.001)
 
     resistance_levels = sorted([l for l in levels if l.get("kind") == "res"], key=lambda x: x["value"])
     support_levels = sorted([l for l in levels if l.get("kind") == "sup"], key=lambda x: x["value"], reverse=True)
@@ -324,33 +368,68 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
     main_res = res_above[0]["value"] if res_above else (resistance_levels[-1]["value"] if resistance_levels else np.nan)
     main_sup = sup_below[0]["value"] if sup_below else (support_levels[0]["value"] if support_levels else np.nan)
 
-    def add_left_label(y, text, color, yshift=0):
+    # Evita etichette tutte appiccicate: posizione sinistra fissa
+    label_x = df["Date"].iloc[max(1, int(len(df) * 0.08))]
+
+    def add_hline_clean(y, color, dash="dash", width=1.8):
+        if pd.isna(y):
+            return
+        fig.add_hline(
+            y=float(y),
+            line_color=color,
+            line_dash=dash,
+            line_width=width,
+            row=1,
+            col=1
+        )
+
+    def label_left(y, text, color, ay=0):
         if pd.isna(y):
             return
         fig.add_annotation(
-            x=df["Date"].iloc[max(1, int(len(df) * 0.06))],
-            y=float(y), text=text, showarrow=True, arrowhead=2,
-            ax=-35, ay=yshift, font=dict(size=12, color="white"),
-            bgcolor=color, bordercolor=color, borderwidth=1, borderpad=4,
-            opacity=0.95, row=1, col=1
+            x=label_x,
+            y=float(y),
+            text=text,
+            showarrow=True,
+            arrowhead=2,
+            arrowsize=1,
+            arrowwidth=2,
+            arrowcolor=color,
+            ax=-45,
+            ay=ay,
+            font=dict(size=12, color="#FFFFFF"),
+            bgcolor=color,
+            bordercolor=color,
+            borderwidth=1,
+            borderpad=5,
+            opacity=0.96,
+            row=1,
+            col=1
         )
 
-    def add_clean_line(y, color, dash="dash", width=1.5):
-        if pd.isna(y):
-            return
-        fig.add_hline(y=float(y), line_color=color, line_dash=dash, line_width=width, row=1, col=1)
-
+    # Supply / Demand principali
     if st.session_state.get("ui_show_zones", True):
         if not pd.isna(main_res):
-            fig.add_hrect(y0=float(main_res)-zone_w, y1=float(main_res)+zone_w,
-                          fillcolor="rgba(255,75,75,0.14)", line_width=0, row=1, col=1)
-            add_clean_line(main_res, "#FF4B4B", "dash", 1.8)
-            add_left_label(main_res, f"🔴 SUPPLY / RESISTENZA {format_level(main_res)}", "#7F1D1D", -10)
+            fig.add_hrect(
+                y0=float(main_res) - zone_w,
+                y1=float(main_res) + zone_w,
+                fillcolor="rgba(255,75,75,0.16)",
+                line_width=0,
+                row=1, col=1
+            )
+            add_hline_clean(main_res, "#FF4B4B", "dash", 1.8)
+            label_left(main_res, f"🔴 SUPPLY {format_level(main_res)}", "#7F1D1D", -8)
+
         if not pd.isna(main_sup):
-            fig.add_hrect(y0=float(main_sup)-zone_w, y1=float(main_sup)+zone_w,
-                          fillcolor="rgba(0,230,118,0.12)", line_width=0, row=1, col=1)
-            add_clean_line(main_sup, "#00E676", "dash", 1.8)
-            add_left_label(main_sup, f"🟢 DEMAND / SUPPORTO {format_level(main_sup)}", "#064E3B", 10)
+            fig.add_hrect(
+                y0=float(main_sup) - zone_w,
+                y1=float(main_sup) + zone_w,
+                fillcolor="rgba(0,230,118,0.14)",
+                line_width=0,
+                row=1, col=1
+            )
+            add_hline_clean(main_sup, "#00E676", "dash", 1.8)
+            label_left(main_sup, f"🟢 DEMAND {format_level(main_sup)}", "#064E3B", 8)
 
     entry = row.get("Entry", np.nan)
     sl = row.get("SL", np.nan)
@@ -358,49 +437,85 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
     tp2 = row.get("TP2", np.nan)
     br = row.get("Livello BR", np.nan)
 
-    add_clean_line(br, "#FACC15", "solid", 2.4)
-    add_left_label(br, f"🚀 BREAK {format_level(br)}", "#854D0E", 0)
+    # Livelli operativi
+    add_hline_clean(br, "#FACC15", "solid", 2.5)
+    label_left(br, f"🚀 BREAK {format_level(br)}", "#854D0E", -3)
 
-    add_clean_line(entry, "#38BDF8", "dot", 2.0)
-    add_left_label(entry, f"📊 ENTRY {format_level(entry)}", "#075985", -20)
+    add_hline_clean(entry, "#38BDF8", "dot", 2.0)
+    label_left(entry, f"📊 ENTRY {format_level(entry)}", "#075985", -22)
 
-    add_clean_line(sl, "#FF4B4B", "solid", 2.0)
-    add_left_label(sl, f"🛑 STOP {format_level(sl)}", "#7F1D1D", 20)
+    add_hline_clean(sl, "#FF4B4B", "solid", 2.0)
+    label_left(sl, f"🛑 STOP {format_level(sl)}", "#7F1D1D", 22)
 
-    add_clean_line(tp1, "#FFFFFF", "dot", 1.7)
-    add_left_label(tp1, f"🎯 TP1 {format_level(tp1)}", "#1F2937", -25)
+    add_hline_clean(tp1, "#FFFFFF", "dot", 1.7)
+    label_left(tp1, f"🎯 TP1 {format_level(tp1)}", "#1F2937", -28)
 
-    add_clean_line(tp2, "#FFFFFF", "dot", 1.7)
-    add_left_label(tp2, f"🎯 TP2 {format_level(tp2)}", "#1F2937", 25)
+    add_hline_clean(tp2, "#FFFFFF", "dot", 1.7)
+    label_left(tp2, f"🎯 TP2 {format_level(tp2)}", "#1F2937", 28)
 
+    # Frase dummies grande in alto
     phrase = row.get("Frase Dummies", build_break_phrase(row))
     fig.add_annotation(
-        x=0.02, y=1.08, xref="paper", yref="paper",
-        text=f"<b>{phrase}</b>", showarrow=False,
-        font=dict(size=18, color="#FFFFFF"), bgcolor="rgba(0,0,0,0.75)",
-        bordercolor="#FACC15", borderwidth=1, borderpad=8, align="left"
+        x=0.01, y=1.10,
+        xref="paper", yref="paper",
+        text=f"<b>{phrase}</b>",
+        showarrow=False,
+        font=dict(size=18, color="#FFFFFF"),
+        bgcolor="rgba(0,0,0,0.78)",
+        bordercolor="#FACC15",
+        borderwidth=1,
+        borderpad=8,
+        align="left"
     )
 
+    # Volumi verdi / rossi
     volume_colors = np.where(df["Close"] >= df["Open"], "#00E676", "#FF4B4B")
     vol_y = df["VolX"] if "VolX" in df else df["Volume"]
-    fig.add_trace(go.Bar(x=df["Date"], y=vol_y, name="Volume", marker_color=volume_colors, opacity=0.85), row=2, col=1)
-    fig.add_hline(y=1.8, line_dash="dash", line_color="#FFFFFF", line_width=1, annotation_text="Volume caldo 1.8x", row=2, col=1)
+    fig.add_trace(
+        go.Bar(
+            x=df["Date"],
+            y=vol_y,
+            name="Volume",
+            marker_color=volume_colors,
+            opacity=0.88
+        ),
+        row=2,
+        col=1
+    )
+    fig.add_hline(
+        y=1.8,
+        line_dash="dash",
+        line_color="#FFFFFF",
+        line_width=1,
+        annotation_text="Volume caldo 1.8x",
+        row=2,
+        col=1
+    )
 
     fig.update_xaxes(rangeslider_visible=False)
     fig.update_layout(
-        height=720, template="plotly_dark",
-        plot_bgcolor="#0B0F19", paper_bgcolor="#0B0F19",
-        font=dict(color="white"), margin=dict(l=10, r=10, t=80, b=10),
-        title=f"{ticker} - Grafico pulito stile TradingView"
+        height=720,
+        template="plotly_dark",
+        plot_bgcolor="#0B0F19",
+        paper_bgcolor="#0B0F19",
+        font=dict(color="white"),
+        margin=dict(l=10, r=10, t=82, b=10),
+        title=f"{ticker} - V7 TradingView Clean",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
     )
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.12)", zeroline=False, row=1, col=1)
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.12)", zeroline=False, row=2, col=1)
     return fig
 
 
-
 # ========================= UI STREAMLIT V5 =========================
-st.set_page_config(page_title="NO BR NO PARTY V6", layout="wide")
+st.set_page_config(page_title="NO BR NO PARTY V7", layout="wide")
 
 UI_PRESETS = {
     "Nero Pro": {"bg":"#000000","sidebar":"#050505","card":"#101010","accent":"#00E676","text":"#FFFFFF","button":"#111111"},
@@ -410,7 +525,7 @@ UI_PRESETS = {
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
 DEFAULT_UI = {
-    "app_name": "NO BR NO PARTY V6",
+    "app_name": "NO BR NO PARTY V7",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
@@ -490,7 +605,7 @@ def verdict_from_score(score):
 
 def render_title():
     st.title(f"{st.session_state.ui_main_emoji} {st.session_state.ui_app_name}")
-    st.caption("Versione V6: mobile friendly, PWA, grafico pulito, supply/demand, frase semplice e radar.")
+    st.caption("Versione V7: grafico TradingView pulito, frecce sui livelli, supply/demand leggibili e frasi dummies.")
 
 
 def render_premium_summary(row):
@@ -602,7 +717,7 @@ def render_home():
     st.markdown(f"### {st.session_state.ui_top_emoji} Home")
     st.markdown("""
     <div class="party-card">
-        <b>📱 Versione Mobile/PWA pronta.</b><br>
+        <b>📱 Versione V7 Mobile/PWA pronta.</b><br>
         Apri questa app da Android o iPhone e usa "Aggiungi alla schermata Home".
     </div>
     """, unsafe_allow_html=True)
