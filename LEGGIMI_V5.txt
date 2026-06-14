@@ -1,0 +1,4 @@
+NO BR NO PARTY V5 - Barra alta
+
+Versione con schede in alto: Home, Coin, Radar, Preferiti, Impostazioni.
+Più comoda per cellulare e app online Streamlit.

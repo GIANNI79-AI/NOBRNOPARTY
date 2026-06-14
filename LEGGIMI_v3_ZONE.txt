@@ -1,0 +1,12 @@
+NO BR NO PARTY v3 - Zone e frase "Se rompe..."
+
+Aggiunto:
+- Frase dummies: "Se rompe X può volare" / "Se perde X può scendere"
+- Supply zone / Resistenza in rosso sul grafico
+- Demand zone / Supporto in verde sul grafico
+- Scheda coin con zone visibili
+- Impostazioni app: nome, emoji, tema, mostra/nasconde zone
+
+Nota:
+Le zone sono calcolate dai pivot/supporti/resistenze già presenti nel tuo programma.
+Non sono consigli finanziari: servono come aiuto visivo.

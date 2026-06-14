@@ -1,0 +1,9 @@
+NO BR NO PARTY v4 - Grafico TradingView pulito
+
+- Tolte EMA 5, EMA 10, EMA 223, MVWAP dal grafico
+- Restano solo prezzo, EMA 60, VWAP
+- Supply principale e Demand principale
+- Etichette spostate a sinistra con frecce
+- Entry, Stop, TP1, TP2 e Break leggibili
+- Frase grande: Se rompe X può volare / Se perde X può scendere
+- Volumi verdi e rossi
