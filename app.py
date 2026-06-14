@@ -400,7 +400,7 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
 
 
 # ========================= UI STREAMLIT V5 =========================
-st.set_page_config(page_title="NO BR NO PARTY V5", layout="wide")
+st.set_page_config(page_title="NO BR NO PARTY V6", layout="wide")
 
 UI_PRESETS = {
     "Nero Pro": {"bg":"#000000","sidebar":"#050505","card":"#101010","accent":"#00E676","text":"#FFFFFF","button":"#111111"},
@@ -410,7 +410,7 @@ UI_PRESETS = {
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
 DEFAULT_UI = {
-    "app_name": "NO BR NO PARTY V5",
+    "app_name": "NO BR NO PARTY V6",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
@@ -490,7 +490,29 @@ def verdict_from_score(score):
 
 def render_title():
     st.title(f"{st.session_state.ui_main_emoji} {st.session_state.ui_app_name}")
-    st.caption("Versione V5: grafico pulito, supply/demand, frase semplice, radar e preferiti.")
+    st.caption("Versione V6: mobile friendly, PWA, grafico pulito, supply/demand, frase semplice e radar.")
+
+
+def render_premium_summary(row):
+    phrase = row.get("Frase Dummies", build_break_phrase(row))
+    score = row.get("BR Score", 0)
+    verdict = verdict_from_score(score)
+    card_class = "party-card" if score >= 65 else "danger-card"
+    st.markdown(f"""
+    <div class="{card_class}">
+        <div style="font-size:1.45rem;font-weight:900;margin-bottom:.35rem;">{phrase}</div>
+        <div style="font-size:1.05rem;font-weight:800;">{verdict} &nbsp; | &nbsp; Score {score}/100 &nbsp; | &nbsp; Volume {row.get('Volume Booster','--')}x</div>
+    </div>
+    """, unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    c1.warning(f"🔴 **SUPPLY / Resistenza**\n\n{row.get('Supply Zone', 'N/A')}")
+    c2.success(f"🟢 **DEMAND / Supporto**\n\n{row.get('Demand Zone', 'N/A')}")
+    c3.info(f"🎯 **Livello BREAK**\n\n{format_level(row.get('Livello BR', np.nan))}")
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric("📊 Entry", format_level(row.get("Entry", np.nan)))
+    e2.metric("🛑 Stop", format_level(row.get("SL", np.nan)))
+    e3.metric("💰 TP1", format_level(row.get("TP1", np.nan)))
+    e4.metric("⏱️ Timing", row.get("Tempo", "N/A"))
 
 def render_coin_analyzer(prefix_key="coin"):
     st.markdown(f"### {st.session_state.ui_coin_emoji} Analizza una coin")
@@ -516,19 +538,7 @@ def render_coin_analyzer(prefix_key="coin"):
             if s_df is not None:
                 s_row, s_analyzed_df, s_levels = analyze_br(s_df, fmt_input, search_tf, 1.8, 1.0, 0.35, require_breakout=False, direction=search_dir)
                 if s_row:
-                    phrase = s_row.get("Frase Dummies", build_break_phrase(s_row))
-                    if st.session_state.ui_show_break_phrase:
-                        st.success(f"### {phrase}")
-                    m1, m2, m3, m4, m5 = st.columns(5)
-                    m1.metric("Verdetto", verdict_from_score(s_row["BR Score"]))
-                    m2.metric("Score", f"{s_row['BR Score']}/100")
-                    m3.metric("Volume", f"{s_row['Volume Booster']}x")
-                    m4.metric("Direzione", s_row["Direzione"])
-                    m5.metric("Timing", s_row["Tempo"])
-                    z1, z2, z3 = st.columns(3)
-                    z1.warning(f"🔴 **Supply / Resistenza**\n\n{s_row.get('Supply Zone', 'N/A')}")
-                    z2.success(f"🟢 **Demand / Supporto**\n\n{s_row.get('Demand Zone', 'N/A')}")
-                    z3.info(f"🎯 **Livello chiave**\n\n{format_level(s_row.get('Livello BR', np.nan))}")
+                    render_premium_summary(s_row)
                     st.plotly_chart(draw_chart(s_analyzed_df, fmt_input, s_levels, s_row), use_container_width=True, key=f"{prefix_key}_chart")
                     with st.expander("Dettagli tecnici"):
                         st.write(s_row)
@@ -585,24 +595,28 @@ def render_radar(prefix_key="radar"):
         pack = st.session_state.scan_cache.get(ticker_scelto)
         if pack:
             row = pack["row"]
-            st.success(f"### {row.get('Frase Dummies', build_break_phrase(row))}")
-            c1,c2,c3,c4 = st.columns(4)
-            c1.metric("Verdetto", verdict_from_score(row["BR Score"]))
-            c2.metric("Score", f"{row['BR Score']}/100")
-            c3.metric("Volume", f"{row['Volume Booster']}x")
-            c4.metric("Timing", row["Tempo"])
+            render_premium_summary(row)
             st.plotly_chart(draw_chart(pack["df"], ticker_scelto, pack["levels"], row), use_container_width=True, key=f"{prefix_key}_radar_chart")
 
 def render_home():
     st.markdown(f"### {st.session_state.ui_top_emoji} Home")
-    st.info("Da qui puoi aprire subito i preferiti o andare al Radar.")
+    st.markdown("""
+    <div class="party-card">
+        <b>📱 Versione Mobile/PWA pronta.</b><br>
+        Apri questa app da Android o iPhone e usa "Aggiungi alla schermata Home".
+    </div>
+    """, unsafe_allow_html=True)
+    h1, h2, h3 = st.columns(3)
+    h1.metric("🟢 PARTY VERO", "Score ≥ 82")
+    h2.metric("🟡 BUONO", "65 - 81")
+    h3.metric("🔴 NON ENTRARE", "< 45")
     if st.session_state.favorites:
-        st.write("⭐ **Preferiti:**")
+        st.write("⭐ **Preferiti rapidi:**")
         cols = st.columns(min(4, len(st.session_state.favorites)))
         for i, fav in enumerate(st.session_state.favorites[:4]):
-            cols[i % len(cols)].metric(fav, "Apri nella sezione Coin")
-    st.markdown("#### Regole Dummies")
-    st.write("🟢 PARTY VERO = interessante. 🟡 BUONO = aspetta conferma. 🟠 ASPETTA = non avere fretta. 🔴 NON ENTRARE = lascia stare.")
+            cols[i % len(cols)].metric(fav, "Vai in Coin")
+    st.markdown("#### Regola d'oro")
+    st.write("Non entrare perché il prezzo si muove. Entra solo quando rompe il livello giusto con volume e struttura chiara.")
 
 def render_favorites():
     st.markdown("### ⭐ Preferiti")
@@ -613,6 +627,35 @@ def render_favorites():
     st.write(st.session_state.favorites)
 
 apply_css()
+
+st.markdown("""
+<style>
+@media (max-width: 768px) {
+    .block-container {padding: 0.75rem 0.75rem !important;}
+    h1 {font-size: 2rem !important; line-height: 1.1 !important;}
+    h2, h3 {font-size: 1.35rem !important;}
+    [data-testid="stMetric"] {padding: 0.75rem !important;}
+    div.stButton > button {min-height: 52px !important; font-size: 1rem !important;}
+    .stTabs [data-baseweb="tab-list"] {gap: 0.2rem !important; overflow-x: auto !important;}
+    .stTabs [data-baseweb="tab"] {padding: 0.75rem 0.75rem !important; white-space: nowrap !important;}
+}
+.party-card {
+    background: linear-gradient(135deg, rgba(0,230,118,.10), rgba(56,189,248,.06));
+    border: 1px solid rgba(0,230,118,.45);
+    border-radius: 18px;
+    padding: 1rem;
+    margin: .6rem 0;
+}
+.danger-card {
+    background: linear-gradient(135deg, rgba(255,75,75,.12), rgba(250,204,21,.04));
+    border: 1px solid rgba(255,75,75,.45);
+    border-radius: 18px;
+    padding: 1rem;
+    margin: .6rem 0;
+}
+</style>
+""", unsafe_allow_html=True)
+
 render_title()
 
 tab_home, tab_coin, tab_radar, tab_fav, tab_settings = st.tabs([
