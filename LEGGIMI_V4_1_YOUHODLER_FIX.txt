@@ -1,0 +1,11 @@
+NO BR NO PARTY V4.1 - Fix YouHodler List
+
+Correzione:
+- aggiunta/forzata lista YouHodler
+- la categoria "YouHodler List" compare sempre
+- se una categoria non viene trovata, usa YouHodler come fallback
+- mostra il numero di coin nella categoria selezionata
+
+Carica su GitHub:
+- app.py
+- requirements.txt
