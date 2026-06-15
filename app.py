@@ -67,58 +67,131 @@ def clean_ticker_for_api(t: str):
     ]
 
 
+
 def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 250):
     """
-    V7.1 - fetch robusto.
-    Prima prova CCXT, poi fallback diretto API Bybit.
+    V7.3 FIX DATI:
+    prova più fonti e più formati simbolo.
+    1) CCXT Bybit con simboli tipo BTC/USDT:USDT
+    2) Bybit REST linear
+    3) Bybit REST spot
+    4) Binance Futures REST
+    5) Binance Spot REST
     """
-    symbol = (symbol or "").upper().strip()
-    if not symbol.endswith("USDT"):
-        symbol = f"{symbol}USDT"
+    raw_symbol = (symbol or "").upper().strip()
+    if not raw_symbol:
+        return None, symbol
 
+    base = raw_symbol.replace("USDT", "").replace("/", "").replace(":USDT", "").strip()
+    symbol_usdt = f"{base}USDT"
+
+    def _standardize_df(df):
+        if df is None or df.empty:
+            return None
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
+        df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms", errors="coerce")
+        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume", "Date"]].dropna().reset_index(drop=True)
+        return df if not df.empty else None
+
+    # 1) CCXT Bybit: prova formati corretti per swap
     try:
-        ex = ccxt.bybit({
-            "enableRateLimit": True,
-            "options": {"defaultType": "swap"}
-        })
-        data = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        if data:
-            df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-            df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
-            for col in ["Open", "High", "Low", "Close", "Volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df.dropna().reset_index(drop=True)
-            if not df.empty:
-                return df, symbol
+        ex = get_exchange_client()
+        candidates = [
+            f"{base}/USDT:USDT",
+            f"{base}/USDT",
+            symbol_usdt,
+            raw_symbol,
+        ]
+        for candidate in candidates:
+            try:
+                data = ex.fetch_ohlcv(candidate, timeframe=timeframe, limit=limit)
+                if data:
+                    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                    df = _standardize_df(df)
+                    if df is not None:
+                        return df, symbol_usdt
+            except Exception:
+                continue
     except Exception:
         pass
 
+    # timeframe maps
+    bybit_tf = {
+        "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+        "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+        "1d": "D", "1w": "W"
+    }.get(timeframe, timeframe.replace("m", "").replace("h", ""))
+
+    binance_tf = {
+        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+        "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "12h": "12h",
+        "1d": "1d", "1w": "1w"
+    }.get(timeframe, timeframe)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (NO BR NO PARTY Scanner)",
+        "Accept": "application/json"
+    }
+
+    # 2) Bybit REST linear
+    for category in ["linear", "spot"]:
+        try:
+            url = "https://api.bybit.com/v5/market/kline"
+            params = {
+                "category": category,
+                "symbol": symbol_usdt,
+                "interval": bybit_tf,
+                "limit": min(int(limit), 1000)
+            }
+            r = requests.get(url, params=params, headers=headers, timeout=15)
+            j = r.json()
+            rows = j.get("result", {}).get("list", [])
+            if rows:
+                rows = list(reversed(rows))
+                df = pd.DataFrame(rows, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume", "Turnover"])
+                df = _standardize_df(df)
+                if df is not None:
+                    return df, symbol_usdt
+        except Exception:
+            pass
+
+    # 4) Binance Futures REST
     try:
-        tf_map = {
-            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-            "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
-            "1d": "D", "1w": "W"
-        }
-        interval = tf_map.get(timeframe, timeframe.replace("m", "").replace("h", ""))
-        url = "https://api.bybit.com/v5/market/kline"
-        params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": min(int(limit), 1000)}
-        r = requests.get(url, params=params, timeout=12)
-        j = r.json()
-        rows = j.get("result", {}).get("list", [])
-        if rows:
-            rows = list(reversed(rows))
-            df = pd.DataFrame(rows, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume", "Turnover"])
-            df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
-            df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
-            for col in ["Open", "High", "Low", "Close", "Volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume", "Date"]].dropna().reset_index(drop=True)
-            if not df.empty:
-                return df, symbol
+        url = "https://fapi.binance.com/fapi/v1/klines"
+        params = {"symbol": symbol_usdt, "interval": binance_tf, "limit": min(int(limit), 1000)}
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+        rows = r.json()
+        if isinstance(rows, list) and rows and isinstance(rows[0], list):
+            df = pd.DataFrame(rows, columns=[
+                "Timestamp", "Open", "High", "Low", "Close", "Volume",
+                "CloseTime", "QuoteVolume", "Trades", "TakerBase", "TakerQuote", "Ignore"
+            ])
+            df = _standardize_df(df)
+            if df is not None:
+                return df, symbol_usdt
     except Exception:
         pass
 
-    return None, symbol
+    # 5) Binance Spot REST
+    try:
+        url = "https://api.binance.com/api/v3/klines"
+        params = {"symbol": symbol_usdt, "interval": binance_tf, "limit": min(int(limit), 1000)}
+        r = requests.get(url, params=params, headers=headers, timeout=15)
+        rows = r.json()
+        if isinstance(rows, list) and rows and isinstance(rows[0], list):
+            df = pd.DataFrame(rows, columns=[
+                "Timestamp", "Open", "High", "Low", "Close", "Volume",
+                "CloseTime", "QuoteVolume", "Trades", "TakerBase", "TakerQuote", "Ignore"
+            ])
+            df = _standardize_df(df)
+            if df is not None:
+                return df, symbol_usdt
+    except Exception:
+        pass
+
+    return None, symbol_usdt
 
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
@@ -183,6 +256,13 @@ def analyze_br(df: pd.DataFrame, ticker: str, timeframe: str, volume_hot: float,
 
     df = add_indicators(df)
     levels = pine_style_levels(df)
+    if not levels:
+        # fallback semplice: livelli recenti se i pivot larghi non trovano nulla
+        recent = df.tail(80)
+        levels = [
+            {"name": "Resistenza recente", "kind": "res", "power": "B", "value": float(recent["High"].max())},
+            {"name": "Supporto recente", "kind": "sup", "power": "B", "value": float(recent["Low"].min())},
+        ]
     if df.empty:
         return None, df, levels
 
@@ -559,7 +639,7 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
 
 
 # ========================= UI STREAMLIT V5 =========================
-st.set_page_config(page_title="NO BR NO PARTY V7.2.2", layout="wide")
+st.set_page_config(page_title="NO BR NO PARTY V7.3", layout="wide")
 
 UI_PRESETS = {
     "Nero Pro": {"bg":"#000000","sidebar":"#050505","card":"#101010","accent":"#00E676","text":"#FFFFFF","button":"#111111"},
@@ -569,7 +649,7 @@ UI_PRESETS = {
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
 DEFAULT_UI = {
-    "app_name": "NO BR NO PARTY V7.2.2",
+    "app_name": "NO BR NO PARTY V7.3",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
@@ -649,7 +729,7 @@ def verdict_from_score(score):
 
 def render_title():
     st.title(f"{st.session_state.ui_main_emoji} {st.session_state.ui_app_name}")
-    st.caption("Versione V7.2: debug radar, caricamento dati robusto, grafico pulito.")
+    st.caption("Versione V7.3: fix dati multi-fonte, radar debug e grafico pulito.")
 
 
 def render_premium_summary(row):
@@ -709,7 +789,7 @@ def render_coin_analyzer(prefix_key="coin"):
 
 def render_radar(prefix_key="radar"):
     st.markdown(f"### {st.session_state.ui_radar_emoji} Radar automatico")
-    st.info("V7.2 Debug: se una coin non carica, ora lo vedi nella tabella debug.")
+    st.info("V7.3 Debug: se una coin non carica, ora lo vedi nella tabella debug.")
 
     f1, f2, f3 = st.columns(3)
     with f1:
@@ -801,7 +881,7 @@ def render_home():
     st.markdown(f"### {st.session_state.ui_top_emoji} Home")
     st.markdown("""
     <div class="party-card">
-        <b>📱 Versione V7.1 Mobile/PWA pronta.</b><br>
+        <b>📱 Versione V7.3 Mobile/PWA pronta.</b><br>
         Apri questa app da Android o iPhone e usa "Aggiungi alla schermata Home".
     </div>
     """, unsafe_allow_html=True)
