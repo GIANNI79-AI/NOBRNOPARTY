@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
+import requests
 
 # ================================================================
 #  NO BR NO PARTY SCANNER - COMPLETE & DEBUGGED EDITION
@@ -65,17 +66,60 @@ def clean_ticker_for_api(t: str):
         f"{no_prefix}/USDT", f"{no_prefix}/USDT:USDT", f"1000{no_prefix}/USDT:USDT"
     ]
 
-def fetch_ohlcv_safe(display_ticker: str, timeframe: str, limit: int = 260):
-    for symbol in clean_ticker_for_api(display_ticker):
-        try:
-            candles = bybit.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            if candles and len(candles) > 80:
-                df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
+
+def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 250):
+    """
+    V7.1 - fetch robusto.
+    Prima prova CCXT, poi fallback diretto API Bybit.
+    """
+    symbol = (symbol or "").upper().strip()
+    if not symbol.endswith("USDT"):
+        symbol = f"{symbol}USDT"
+
+    try:
+        ex = ccxt.bybit({
+            "enableRateLimit": True,
+            "options": {"defaultType": "swap"}
+        })
+        data = ex.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        if data:
+            df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+            df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df.dropna().reset_index(drop=True)
+            if not df.empty:
                 return df, symbol
-        except Exception:
-            continue
-    return None, None
+    except Exception:
+        pass
+
+    try:
+        tf_map = {
+            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+            "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+            "1d": "D", "1w": "W"
+        }
+        interval = tf_map.get(timeframe, timeframe.replace("m", "").replace("h", ""))
+        url = "https://api.bybit.com/v5/market/kline"
+        params = {"category": "linear", "symbol": symbol, "interval": interval, "limit": min(int(limit), 1000)}
+        r = requests.get(url, params=params, timeout=12)
+        j = r.json()
+        rows = j.get("result", {}).get("list", [])
+        if rows:
+            rows = list(reversed(rows))
+            df = pd.DataFrame(rows, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume", "Turnover"])
+            df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
+            df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume", "Date"]].dropna().reset_index(drop=True)
+            if not df.empty:
+                return df, symbol
+    except Exception:
+        pass
+
+    return None, symbol
+
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -515,7 +559,7 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
 
 
 # ========================= UI STREAMLIT V5 =========================
-st.set_page_config(page_title="NO BR NO PARTY V7", layout="wide")
+st.set_page_config(page_title="NO BR NO PARTY V7.2.2", layout="wide")
 
 UI_PRESETS = {
     "Nero Pro": {"bg":"#000000","sidebar":"#050505","card":"#101010","accent":"#00E676","text":"#FFFFFF","button":"#111111"},
@@ -525,7 +569,7 @@ UI_PRESETS = {
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
 DEFAULT_UI = {
-    "app_name": "NO BR NO PARTY V7",
+    "app_name": "NO BR NO PARTY V7.2.2",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
@@ -605,7 +649,7 @@ def verdict_from_score(score):
 
 def render_title():
     st.title(f"{st.session_state.ui_main_emoji} {st.session_state.ui_app_name}")
-    st.caption("Versione V7: grafico TradingView pulito, frecce sui livelli, supply/demand leggibili e frasi dummies.")
+    st.caption("Versione V7.2: debug radar, caricamento dati robusto, grafico pulito.")
 
 
 def render_premium_summary(row):
@@ -660,10 +704,13 @@ def render_coin_analyzer(prefix_key="coin"):
                 else:
                     st.warning("Dati caricati, ma nessun livello utile trovato.")
             else:
-                st.error(f"Impossibile caricare dati per {fmt_input}.")
+                st.error(f"Impossibile caricare dati per {fmt_input}. Prova ETH o SOL, oppure cambia timeframe. Se succede ancora, mandami i log Streamlit.")
+
 
 def render_radar(prefix_key="radar"):
     st.markdown(f"### {st.session_state.ui_radar_emoji} Radar automatico")
+    st.info("V7.2 Debug: se una coin non carica, ora lo vedi nella tabella debug.")
+
     f1, f2, f3 = st.columns(3)
     with f1:
         chosen_timeframe = st.selectbox("Timeframe Radar", TIMEFRAMES, index=TIMEFRAMES.index("15m"), key=f"{prefix_key}_tf")
@@ -671,41 +718,73 @@ def render_radar(prefix_key="radar"):
     with f2:
         category_options = ["YouHodler List", "Tutti i 444 Asset"] + [k for k in BYBIT_444_DATABASE.keys() if k != "YouHodler List"]
         category_selector = st.selectbox("Categoria", category_options, index=0, key=f"{prefix_key}_cat")
-        max_assets = st.slider("Numero massimo coin", 10, 444, 40, step=10, key=f"{prefix_key}_max")
+        max_assets = st.slider("Numero massimo coin", 5, 444, 20, step=5, key=f"{prefix_key}_max")
     with f3:
-        volume_hot = st.slider("Volume minimo", 1.1, 5.0, 1.8, step=0.1, key=f"{prefix_key}_vol")
-        min_score = st.slider("Score minimo", 0, 100, 45, step=5, key=f"{prefix_key}_score")
+        volume_hot = st.slider("Volume minimo", 1.0, 5.0, 1.0, step=0.1, key=f"{prefix_key}_vol")
+        min_score = st.slider("Score minimo", 0, 100, 0, step=5, key=f"{prefix_key}_score")
+
     require_breakout = st.toggle("Solo rottura già fatta", value=False, key=f"{prefix_key}_break")
+    show_debug = st.toggle("Mostra debug radar", value=True, key=f"{prefix_key}_debug")
+
     if st.button("🔄 Avvia scansione radar", type="primary", use_container_width=True, key=f"{prefix_key}_scan"):
-        current_tickers = list(ALL_TICKERS) if category_selector == "Tutti i 444 Asset" else BYBIT_444_DATABASE[category_selector]
+        current_tickers = list(ALL_TICKERS) if category_selector == "Tutti i 444 Asset" else BYBIT_444_DATABASE.get(category_selector, [])
         current_tickers = current_tickers[:max_assets]
-        rows, cache = [], {}
+        rows, cache, debug_rows = [], {}, []
         progress = st.progress(0)
         status = st.empty()
+
         for i, ticker in enumerate(current_tickers, start=1):
             status.write(f"Scansiono {ticker}... {i}/{len(current_tickers)}")
-            df, used_symbol = fetch_ohlcv_safe(ticker, chosen_timeframe, limit=280)
-            if df is not None:
-                try:
-                    row, analyzed_df, levels = analyze_br(df, ticker, chosen_timeframe, volume_hot, 1.0, 0.35, require_breakout=require_breakout, direction=trade_direction)
-                    if row:
-                        row["Verdetto"] = verdict_from_score(row["BR Score"])
-                        rows.append(row)
-                        cache[ticker] = {"df": analyzed_df, "levels": levels, "row": row, "symbol": used_symbol}
-                except Exception:
-                    pass
-            progress.progress(i / len(current_tickers))
-        progress.empty(); status.empty()
-        st.session_state.scan_rows = pd.DataFrame(rows)
-        if not st.session_state.scan_rows.empty:
-            st.session_state.scan_rows = st.session_state.scan_rows[st.session_state.scan_rows["BR Score"] >= min_score].sort_values(["BR Score", "Volume Booster"], ascending=[False, False]).reset_index(drop=True)
+            try:
+                df, used_symbol = fetch_ohlcv_safe(ticker, chosen_timeframe, limit=280)
+                if df is None or df.empty:
+                    debug_rows.append({"Ticker": ticker, "Stato": "NO DATA", "Errore": "nessun dato"})
+                    progress.progress(i / max(len(current_tickers), 1))
+                    continue
+
+                row, analyzed_df, levels = analyze_br(df, ticker, chosen_timeframe, volume_hot, 1.0, 0.35, require_breakout=require_breakout, direction=trade_direction)
+
+                if row is None:
+                    last_close = float(df["Close"].iloc[-1]) if "Close" in df and len(df) else np.nan
+                    debug_rows.append({"Ticker": ticker, "Stato": "LETTA MA NO SETUP", "Errore": f"close={format_level(last_close)}"})
+                    progress.progress(i / max(len(current_tickers), 1))
+                    continue
+
+                row["Verdetto"] = verdict_from_score(row.get("BR Score", 0))
+                rows.append(row)
+                cache[ticker] = {"df": analyzed_df, "levels": levels, "row": row, "symbol": used_symbol}
+                debug_rows.append({"Ticker": ticker, "Stato": "OK", "Errore": ""})
+
+            except Exception as e:
+                debug_rows.append({"Ticker": ticker, "Stato": "ERRORE", "Errore": str(e)[:180]})
+
+            progress.progress(i / max(len(current_tickers), 1))
+
+        progress.empty()
+        status.empty()
+
+        df_rows = pd.DataFrame(rows)
+        if not df_rows.empty and "BR Score" in df_rows.columns:
+            df_rows = df_rows[df_rows["BR Score"] >= min_score].sort_values(["BR Score", "Volume Booster"], ascending=[False, False]).reset_index(drop=True)
+
+        st.session_state.scan_rows = df_rows
         st.session_state.scan_cache = cache
+        st.session_state.scan_debug = pd.DataFrame(debug_rows)
+        st.success(f"Scansione finita: {len(rows)} setup trovati su {len(current_tickers)} coin.")
+
     df_display = st.session_state.get("scan_rows", pd.DataFrame())
-    if df_display.empty:
-        st.info("Premi Avvia scansione radar per popolare la tabella.")
+    debug_df = st.session_state.get("scan_debug", pd.DataFrame())
+
+    if df_display is None or df_display.empty:
+        st.warning("Nessun setup nella tabella principale. Guarda il debug sotto.")
+        if show_debug and debug_df is not None and not debug_df.empty:
+            st.markdown("### 🛠️ Debug scansione")
+            st.dataframe(debug_df, use_container_width=True, hide_index=True, height=320)
     else:
         cols = [c for c in ["Ticker","Direzione","Verdetto","Situazione","Frase Dummies","BR Score","Volume Booster","Livello BR"] if c in df_display.columns]
+        st.markdown("### 📋 Risultati radar")
         st.dataframe(df_display[cols], use_container_width=True, hide_index=True, height=360)
+
         ticker_scelto = st.selectbox("Apri grafico coin", df_display["Ticker"].tolist(), key=f"{prefix_key}_select_coin")
         pack = st.session_state.scan_cache.get(ticker_scelto)
         if pack:
@@ -713,11 +792,16 @@ def render_radar(prefix_key="radar"):
             render_premium_summary(row)
             st.plotly_chart(draw_chart(pack["df"], ticker_scelto, pack["levels"], row), use_container_width=True, key=f"{prefix_key}_radar_chart")
 
+        if show_debug and debug_df is not None and not debug_df.empty:
+            with st.expander("🛠️ Debug scansione"):
+                st.dataframe(debug_df, use_container_width=True, hide_index=True, height=280)
+
+
 def render_home():
     st.markdown(f"### {st.session_state.ui_top_emoji} Home")
     st.markdown("""
     <div class="party-card">
-        <b>📱 Versione V7 Mobile/PWA pronta.</b><br>
+        <b>📱 Versione V7.1 Mobile/PWA pronta.</b><br>
         Apri questa app da Android o iPhone e usa "Aggiungi alla schermata Home".
     </div>
     """, unsafe_allow_html=True)
