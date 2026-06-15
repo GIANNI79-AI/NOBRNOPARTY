@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
+import requests
 
 # ================================================================
 #  NO BR NO PARTY SCANNER - COMPLETE & DEBUGGED EDITION
@@ -65,17 +66,111 @@ def clean_ticker_for_api(t: str):
         f"{no_prefix}/USDT", f"{no_prefix}/USDT:USDT", f"1000{no_prefix}/USDT:USDT"
     ]
 
-def fetch_ohlcv_safe(display_ticker: str, timeframe: str, limit: int = 260):
-    for symbol in clean_ticker_for_api(display_ticker):
-        try:
-            candles = bybit.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            if candles and len(candles) > 80:
-                df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
-                return df, symbol
-        except Exception:
-            continue
-    return None, None
+
+def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 250):
+    """
+    V4.2.2 FIX DATI:
+    usa OKX come fonte principale, poi Bybit, poi CCXT.
+    Serve perché su Streamlit Cloud alcune API crypto possono non rispondere.
+    """
+    raw = (symbol or "").upper().strip()
+    if not raw:
+        return None, symbol
+
+    base = raw.replace("USDT", "").replace("/", "").replace(":USDT", "").replace(".P", "").strip()
+    symbol_usdt = f"{base}USDT"
+
+    def _standardize(df):
+        if df is None or df.empty:
+            return None
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
+        df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms", errors="coerce")
+        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume", "Date"]].dropna().reset_index(drop=True)
+        return df if not df.empty else None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 NO-BR-NO-PARTY",
+        "Accept": "application/json"
+    }
+
+    # 1) OKX REST: molto stabile su Streamlit Cloud
+    try:
+        okx_bar_map = {
+            "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+            "1d": "1D"
+        }
+        bar = okx_bar_map.get(timeframe, "15m")
+        okx_candidates = [f"{base}-USDT-SWAP", f"{base}-USDT"]
+        for inst_id in okx_candidates:
+            try:
+                url = "https://www.okx.com/api/v5/market/candles"
+                params = {"instId": inst_id, "bar": bar, "limit": min(int(limit), 300)}
+                r = requests.get(url, params=params, headers=headers, timeout=15)
+                j = r.json()
+                rows = j.get("data", [])
+                if rows:
+                    # OKX: [ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm], newest first
+                    rows = list(reversed(rows))
+                    data = []
+                    for x in rows:
+                        data.append([x[0], x[1], x[2], x[3], x[4], x[5]])
+                    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                    df = _standardize(df)
+                    if df is not None:
+                        return df, symbol_usdt
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 2) Bybit REST linear + spot
+    try:
+        tf_map = {
+            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+            "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+            "1d": "D", "1w": "W"
+        }
+        interval = tf_map.get(timeframe, timeframe.replace("m", "").replace("h", ""))
+        for category in ["linear", "spot"]:
+            try:
+                url = "https://api.bybit.com/v5/market/kline"
+                params = {"category": category, "symbol": symbol_usdt, "interval": interval, "limit": min(int(limit), 1000)}
+                r = requests.get(url, params=params, headers=headers, timeout=15)
+                j = r.json()
+                rows = j.get("result", {}).get("list", [])
+                if rows:
+                    rows = list(reversed(rows))
+                    df = pd.DataFrame(rows, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume", "Turnover"])
+                    df = _standardize(df)
+                    if df is not None:
+                        return df, symbol_usdt
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    # 3) CCXT fallback
+    try:
+        ex = get_exchange_client()
+        candidates = [f"{base}/USDT:USDT", f"{base}/USDT", symbol_usdt, raw]
+        for candidate in candidates:
+            try:
+                data = ex.fetch_ohlcv(candidate, timeframe=timeframe, limit=limit)
+                if data:
+                    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                    df = _standardize(df)
+                    if df is not None:
+                        return df, symbol_usdt
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return None, symbol_usdt
+
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -400,7 +495,7 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
 
 # ========================= UI STREAMLIT ===========================
 
-st.set_page_config(page_title="NO BR NO PARTY Scanner", layout="wide")
+st.set_page_config(page_title="NO BR NO PARTY V4.2.2", layout="wide")
 
 # ========================= IMPOSTAZIONI APP =========================
 UI_PRESETS = {
@@ -411,7 +506,7 @@ UI_PRESETS = {
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
 for k, v in {
-    "app_name": "NO BR NO PARTY Scanner - LONG & SHORT",
+    "app_name": "NO BR NO PARTY V4.2.2 - FIX DATI",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
