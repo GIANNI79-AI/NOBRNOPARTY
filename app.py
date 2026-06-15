@@ -5,7 +5,6 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
-import requests
 
 # ================================================================
 #  NO BR NO PARTY SCANNER - COMPLETE & DEBUGGED EDITION
@@ -66,133 +65,17 @@ def clean_ticker_for_api(t: str):
         f"{no_prefix}/USDT", f"{no_prefix}/USDT:USDT", f"1000{no_prefix}/USDT:USDT"
     ]
 
-
-
-def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 250):
-    """
-    V7.3 FIX DATI:
-    prova più fonti e più formati simbolo.
-    1) CCXT Bybit con simboli tipo BTC/USDT:USDT
-    2) Bybit REST linear
-    3) Bybit REST spot
-    4) Binance Futures REST
-    5) Binance Spot REST
-    """
-    raw_symbol = (symbol or "").upper().strip()
-    if not raw_symbol:
-        return None, symbol
-
-    base = raw_symbol.replace("USDT", "").replace("/", "").replace(":USDT", "").strip()
-    symbol_usdt = f"{base}USDT"
-
-    def _standardize_df(df):
-        if df is None or df.empty:
-            return None
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
-        df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms", errors="coerce")
-        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume", "Date"]].dropna().reset_index(drop=True)
-        return df if not df.empty else None
-
-    # 1) CCXT Bybit: prova formati corretti per swap
-    try:
-        ex = get_exchange_client()
-        candidates = [
-            f"{base}/USDT:USDT",
-            f"{base}/USDT",
-            symbol_usdt,
-            raw_symbol,
-        ]
-        for candidate in candidates:
-            try:
-                data = ex.fetch_ohlcv(candidate, timeframe=timeframe, limit=limit)
-                if data:
-                    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    df = _standardize_df(df)
-                    if df is not None:
-                        return df, symbol_usdt
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # timeframe maps
-    bybit_tf = {
-        "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-        "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
-        "1d": "D", "1w": "W"
-    }.get(timeframe, timeframe.replace("m", "").replace("h", ""))
-
-    binance_tf = {
-        "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-        "1h": "1h", "2h": "2h", "4h": "4h", "6h": "6h", "12h": "12h",
-        "1d": "1d", "1w": "1w"
-    }.get(timeframe, timeframe)
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (NO BR NO PARTY Scanner)",
-        "Accept": "application/json"
-    }
-
-    # 2) Bybit REST linear
-    for category in ["linear", "spot"]:
+def fetch_ohlcv_safe(display_ticker: str, timeframe: str, limit: int = 260):
+    for symbol in clean_ticker_for_api(display_ticker):
         try:
-            url = "https://api.bybit.com/v5/market/kline"
-            params = {
-                "category": category,
-                "symbol": symbol_usdt,
-                "interval": bybit_tf,
-                "limit": min(int(limit), 1000)
-            }
-            r = requests.get(url, params=params, headers=headers, timeout=15)
-            j = r.json()
-            rows = j.get("result", {}).get("list", [])
-            if rows:
-                rows = list(reversed(rows))
-                df = pd.DataFrame(rows, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume", "Turnover"])
-                df = _standardize_df(df)
-                if df is not None:
-                    return df, symbol_usdt
+            candles = bybit.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if candles and len(candles) > 80:
+                df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
+                return df, symbol
         except Exception:
-            pass
-
-    # 4) Binance Futures REST
-    try:
-        url = "https://fapi.binance.com/fapi/v1/klines"
-        params = {"symbol": symbol_usdt, "interval": binance_tf, "limit": min(int(limit), 1000)}
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        rows = r.json()
-        if isinstance(rows, list) and rows and isinstance(rows[0], list):
-            df = pd.DataFrame(rows, columns=[
-                "Timestamp", "Open", "High", "Low", "Close", "Volume",
-                "CloseTime", "QuoteVolume", "Trades", "TakerBase", "TakerQuote", "Ignore"
-            ])
-            df = _standardize_df(df)
-            if df is not None:
-                return df, symbol_usdt
-    except Exception:
-        pass
-
-    # 5) Binance Spot REST
-    try:
-        url = "https://api.binance.com/api/v3/klines"
-        params = {"symbol": symbol_usdt, "interval": binance_tf, "limit": min(int(limit), 1000)}
-        r = requests.get(url, params=params, headers=headers, timeout=15)
-        rows = r.json()
-        if isinstance(rows, list) and rows and isinstance(rows[0], list):
-            df = pd.DataFrame(rows, columns=[
-                "Timestamp", "Open", "High", "Low", "Close", "Volume",
-                "CloseTime", "QuoteVolume", "Trades", "TakerBase", "TakerQuote", "Ignore"
-            ])
-            df = _standardize_df(df)
-            if df is not None:
-                return df, symbol_usdt
-    except Exception:
-        pass
-
-    return None, symbol_usdt
-
+            continue
+    return None, None
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -256,13 +139,6 @@ def analyze_br(df: pd.DataFrame, ticker: str, timeframe: str, volume_hot: float,
 
     df = add_indicators(df)
     levels = pine_style_levels(df)
-    if not levels:
-        # fallback semplice: livelli recenti se i pivot larghi non trovano nulla
-        recent = df.tail(80)
-        levels = [
-            {"name": "Resistenza recente", "kind": "res", "power": "B", "value": float(recent["High"].max())},
-            {"name": "Supporto recente", "kind": "sup", "power": "B", "value": float(recent["Low"].min())},
-        ]
     if df.empty:
         return None, df, levels
 
@@ -420,68 +296,24 @@ def level_zone_text(center, width):
 
 
 
-
 def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
-    """
-    V7 - Grafico TradingView pulito:
-    - Prezzo
-    - VWAP
-    - EMA 60
-    - una Supply principale
-    - una Demand principale
-    - BREAK / Entry / Stop / TP1 / TP2 con frecce leggibili
-    - Volumi verdi e rossi
-    """
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.035,
-        row_heights=[0.78, 0.22]
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.78, 0.22])
 
-    fig.add_trace(
-        go.Candlestick(
-            x=df["Date"],
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
-            name="Prezzo",
-            increasing_line_color="#00E676",
-            decreasing_line_color="#FF4B4B",
-            increasing_fillcolor="#00E676",
-            decreasing_fillcolor="#FF4B4B",
-            line=dict(width=1.1),
-        ),
-        row=1, col=1
-    )
-
-    # Solo 2 guide: VWAP + EMA60
-    if "VWAP" in df:
-        fig.add_trace(
-            go.Scatter(
-                x=df["Date"],
-                y=df["VWAP"],
-                name="VWAP",
-                line=dict(width=2.0, color="#38BDF8")
-            ),
-            row=1, col=1
-        )
+    fig.add_trace(go.Candlestick(
+        x=df["Date"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+        name="Prezzo",
+        increasing_line_color="#00E676", decreasing_line_color="#FF4B4B",
+        increasing_fillcolor="#00E676", decreasing_fillcolor="#FF4B4B"
+    ), row=1, col=1)
 
     if "EMA60" in df:
-        fig.add_trace(
-            go.Scatter(
-                x=df["Date"],
-                y=df["EMA60"],
-                name="EMA 60",
-                line=dict(width=2.0, color="#A855F7")
-            ),
-            row=1, col=1
-        )
+        fig.add_trace(go.Scatter(x=df["Date"], y=df["EMA60"], name="EMA 60", line=dict(width=1.8, color="#A855F7")), row=1, col=1)
+    if "VWAP" in df:
+        fig.add_trace(go.Scatter(x=df["Date"], y=df["VWAP"], name="VWAP", line=dict(width=1.8, color="#38BDF8")), row=1, col=1)
 
     price = float(df["Close"].iloc[-1])
     atr_last = float(df["ATR"].iloc[-1]) if "ATR" in df and pd.notna(df["ATR"].iloc[-1]) else price * 0.004
-    zone_w = max(atr_last * 0.22, price * 0.001)
+    zone_w = max(atr_last * 0.25, price * 0.0012)
 
     resistance_levels = sorted([l for l in levels if l.get("kind") == "res"], key=lambda x: x["value"])
     support_levels = sorted([l for l in levels if l.get("kind") == "sup"], key=lambda x: x["value"], reverse=True)
@@ -492,68 +324,33 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
     main_res = res_above[0]["value"] if res_above else (resistance_levels[-1]["value"] if resistance_levels else np.nan)
     main_sup = sup_below[0]["value"] if sup_below else (support_levels[0]["value"] if support_levels else np.nan)
 
-    # Evita etichette tutte appiccicate: posizione sinistra fissa
-    label_x = df["Date"].iloc[max(1, int(len(df) * 0.08))]
-
-    def add_hline_clean(y, color, dash="dash", width=1.8):
-        if pd.isna(y):
-            return
-        fig.add_hline(
-            y=float(y),
-            line_color=color,
-            line_dash=dash,
-            line_width=width,
-            row=1,
-            col=1
-        )
-
-    def label_left(y, text, color, ay=0):
+    def add_left_label(y, text, color, yshift=0):
         if pd.isna(y):
             return
         fig.add_annotation(
-            x=label_x,
-            y=float(y),
-            text=text,
-            showarrow=True,
-            arrowhead=2,
-            arrowsize=1,
-            arrowwidth=2,
-            arrowcolor=color,
-            ax=-45,
-            ay=ay,
-            font=dict(size=12, color="#FFFFFF"),
-            bgcolor=color,
-            bordercolor=color,
-            borderwidth=1,
-            borderpad=5,
-            opacity=0.96,
-            row=1,
-            col=1
+            x=df["Date"].iloc[max(1, int(len(df) * 0.06))],
+            y=float(y), text=text, showarrow=True, arrowhead=2,
+            ax=-35, ay=yshift, font=dict(size=12, color="white"),
+            bgcolor=color, bordercolor=color, borderwidth=1, borderpad=4,
+            opacity=0.95, row=1, col=1
         )
 
-    # Supply / Demand principali
+    def add_clean_line(y, color, dash="dash", width=1.5):
+        if pd.isna(y):
+            return
+        fig.add_hline(y=float(y), line_color=color, line_dash=dash, line_width=width, row=1, col=1)
+
     if st.session_state.get("ui_show_zones", True):
         if not pd.isna(main_res):
-            fig.add_hrect(
-                y0=float(main_res) - zone_w,
-                y1=float(main_res) + zone_w,
-                fillcolor="rgba(255,75,75,0.16)",
-                line_width=0,
-                row=1, col=1
-            )
-            add_hline_clean(main_res, "#FF4B4B", "dash", 1.8)
-            label_left(main_res, f"🔴 SUPPLY {format_level(main_res)}", "#7F1D1D", -8)
-
+            fig.add_hrect(y0=float(main_res)-zone_w, y1=float(main_res)+zone_w,
+                          fillcolor="rgba(255,75,75,0.14)", line_width=0, row=1, col=1)
+            add_clean_line(main_res, "#FF4B4B", "dash", 1.8)
+            add_left_label(main_res, f"🔴 SUPPLY / RESISTENZA {format_level(main_res)}", "#7F1D1D", -10)
         if not pd.isna(main_sup):
-            fig.add_hrect(
-                y0=float(main_sup) - zone_w,
-                y1=float(main_sup) + zone_w,
-                fillcolor="rgba(0,230,118,0.14)",
-                line_width=0,
-                row=1, col=1
-            )
-            add_hline_clean(main_sup, "#00E676", "dash", 1.8)
-            label_left(main_sup, f"🟢 DEMAND {format_level(main_sup)}", "#064E3B", 8)
+            fig.add_hrect(y0=float(main_sup)-zone_w, y1=float(main_sup)+zone_w,
+                          fillcolor="rgba(0,230,118,0.12)", line_width=0, row=1, col=1)
+            add_clean_line(main_sup, "#00E676", "dash", 1.8)
+            add_left_label(main_sup, f"🟢 DEMAND / SUPPORTO {format_level(main_sup)}", "#064E3B", 10)
 
     entry = row.get("Entry", np.nan)
     sl = row.get("SL", np.nan)
@@ -561,86 +358,51 @@ def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
     tp2 = row.get("TP2", np.nan)
     br = row.get("Livello BR", np.nan)
 
-    # Livelli operativi
-    add_hline_clean(br, "#FACC15", "solid", 2.5)
-    label_left(br, f"🚀 BREAK {format_level(br)}", "#854D0E", -3)
+    add_clean_line(br, "#FACC15", "solid", 2.4)
+    add_left_label(br, f"🚀 BREAK {format_level(br)}", "#854D0E", 0)
 
-    add_hline_clean(entry, "#38BDF8", "dot", 2.0)
-    label_left(entry, f"📊 ENTRY {format_level(entry)}", "#075985", -22)
+    add_clean_line(entry, "#38BDF8", "dot", 2.0)
+    add_left_label(entry, f"📊 ENTRY {format_level(entry)}", "#075985", -20)
 
-    add_hline_clean(sl, "#FF4B4B", "solid", 2.0)
-    label_left(sl, f"🛑 STOP {format_level(sl)}", "#7F1D1D", 22)
+    add_clean_line(sl, "#FF4B4B", "solid", 2.0)
+    add_left_label(sl, f"🛑 STOP {format_level(sl)}", "#7F1D1D", 20)
 
-    add_hline_clean(tp1, "#FFFFFF", "dot", 1.7)
-    label_left(tp1, f"🎯 TP1 {format_level(tp1)}", "#1F2937", -28)
+    add_clean_line(tp1, "#FFFFFF", "dot", 1.7)
+    add_left_label(tp1, f"🎯 TP1 {format_level(tp1)}", "#1F2937", -25)
 
-    add_hline_clean(tp2, "#FFFFFF", "dot", 1.7)
-    label_left(tp2, f"🎯 TP2 {format_level(tp2)}", "#1F2937", 28)
+    add_clean_line(tp2, "#FFFFFF", "dot", 1.7)
+    add_left_label(tp2, f"🎯 TP2 {format_level(tp2)}", "#1F2937", 25)
 
-    # Frase dummies grande in alto
     phrase = row.get("Frase Dummies", build_break_phrase(row))
     fig.add_annotation(
-        x=0.01, y=1.10,
-        xref="paper", yref="paper",
-        text=f"<b>{phrase}</b>",
-        showarrow=False,
-        font=dict(size=18, color="#FFFFFF"),
-        bgcolor="rgba(0,0,0,0.78)",
-        bordercolor="#FACC15",
-        borderwidth=1,
-        borderpad=8,
-        align="left"
+        x=0.02, y=1.08, xref="paper", yref="paper",
+        text=f"<b>{phrase}</b>", showarrow=False,
+        font=dict(size=18, color="#FFFFFF"), bgcolor="rgba(0,0,0,0.75)",
+        bordercolor="#FACC15", borderwidth=1, borderpad=8, align="left"
     )
 
-    # Volumi verdi / rossi
     volume_colors = np.where(df["Close"] >= df["Open"], "#00E676", "#FF4B4B")
     vol_y = df["VolX"] if "VolX" in df else df["Volume"]
-    fig.add_trace(
-        go.Bar(
-            x=df["Date"],
-            y=vol_y,
-            name="Volume",
-            marker_color=volume_colors,
-            opacity=0.88
-        ),
-        row=2,
-        col=1
-    )
-    fig.add_hline(
-        y=1.8,
-        line_dash="dash",
-        line_color="#FFFFFF",
-        line_width=1,
-        annotation_text="Volume caldo 1.8x",
-        row=2,
-        col=1
-    )
+    fig.add_trace(go.Bar(x=df["Date"], y=vol_y, name="Volume", marker_color=volume_colors, opacity=0.85), row=2, col=1)
+    fig.add_hline(y=1.8, line_dash="dash", line_color="#FFFFFF", line_width=1, annotation_text="Volume caldo 1.8x", row=2, col=1)
 
     fig.update_xaxes(rangeslider_visible=False)
     fig.update_layout(
-        height=720,
-        template="plotly_dark",
-        plot_bgcolor="#0B0F19",
-        paper_bgcolor="#0B0F19",
-        font=dict(color="white"),
-        margin=dict(l=10, r=10, t=82, b=10),
-        title=f"{ticker} - V7 TradingView Clean",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        )
+        height=720, template="plotly_dark",
+        plot_bgcolor="#0B0F19", paper_bgcolor="#0B0F19",
+        font=dict(color="white"), margin=dict(l=10, r=10, t=80, b=10),
+        title=f"{ticker} - Grafico pulito stile TradingView"
     )
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.12)", zeroline=False, row=1, col=1)
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.12)", zeroline=False, row=2, col=1)
     return fig
 
 
-# ========================= UI STREAMLIT V5 =========================
-st.set_page_config(page_title="NO BR NO PARTY V7.3", layout="wide")
+# ========================= UI STREAMLIT ===========================
 
+st.set_page_config(page_title="NO BR NO PARTY Scanner", layout="wide")
+
+# ========================= IMPOSTAZIONI APP =========================
 UI_PRESETS = {
     "Nero Pro": {"bg":"#000000","sidebar":"#050505","card":"#101010","accent":"#00E676","text":"#FFFFFF","button":"#111111"},
     "Blu Trading": {"bg":"#020617","sidebar":"#07111F","card":"#0B1220","accent":"#38BDF8","text":"#FFFFFF","button":"#082F49"},
@@ -648,306 +410,232 @@ UI_PRESETS = {
     "Oro Premium": {"bg":"#000000","sidebar":"#070707","card":"#141106","accent":"#FACC15","text":"#FFFFFF","button":"#1E1A08"},
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
-DEFAULT_UI = {
-    "app_name": "NO BR NO PARTY V7.3",
+for k, v in {
+    "app_name": "NO BR NO PARTY Scanner - LONG & SHORT",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
     "top_emoji": "🔥",
-    "coin_emoji": "🪙",
-    "settings_emoji": "⚙️",
     "theme": "Nero Pro",
     "show_zones": True,
     "show_break_phrase": True,
     "big_buttons": True,
     "rounded": True,
     "compact": False,
-    "dummies": True,
-}
-for k, v in DEFAULT_UI.items():
+}.items():
     st.session_state.setdefault("ui_"+k, v)
-st.session_state.setdefault("favorites", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
 
-def apply_css():
-    ui = UI_PRESETS.get(st.session_state.ui_theme, UI_PRESETS["Nero Pro"])
-    radius = "16px" if st.session_state.ui_rounded else "4px"
-    btn_pad = "0.8rem 1rem" if st.session_state.ui_big_buttons else "0.45rem 0.7rem"
-    main_pad = "1.2rem 2rem" if st.session_state.ui_compact else "2rem 4rem"
-    st.markdown(f"""
-    <style>
-    .stApp {{background:{ui['bg']} !important; color:{ui['text']} !important;}}
-    .block-container {{padding:{main_pad} !important;}}
-    section[data-testid="stSidebar"] {{background:{ui['sidebar']} !important; border-right:1px solid {ui['accent']}66 !important;}}
-    section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3,
-    section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span {{color:{ui['text']} !important;}}
-    h1, h2, h3, h4, h5, h6, p, label {{color:{ui['text']} !important;}}
-    [data-testid="stMetric"], div[data-testid="stAlert"], div[data-testid="stExpander"] {{
-        background:{ui['card']} !important; border-radius:{radius} !important; border:1px solid {ui['accent']}33 !important;
-    }}
-    div.stButton > button {{
-        background:{ui['button']} !important; color:{ui['text']} !important; border:1px solid {ui['accent']} !important;
-        border-radius:{radius} !important; padding:{btn_pad} !important; font-weight:800 !important;
-    }}
-    div.stButton > button:hover {{background:{ui['accent']} !important; color:#000 !important;}}
-    hr {{border-color:{ui['accent']}55 !important;}}
-    a {{color:{ui['accent']} !important;}}
-    </style>
-    """, unsafe_allow_html=True)
+with st.sidebar.expander("⚙️ Impostazioni App", expanded=False):
+    st.session_state.ui_app_name = st.text_input("Nome app", st.session_state.ui_app_name)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.session_state.ui_main_emoji = st.text_input("Emoji titolo", st.session_state.ui_main_emoji, max_chars=3)
+        st.session_state.ui_radar_emoji = st.text_input("Emoji radar", st.session_state.ui_radar_emoji, max_chars=3)
+    with c2:
+        st.session_state.ui_search_emoji = st.text_input("Emoji ricerca", st.session_state.ui_search_emoji, max_chars=3)
+        st.session_state.ui_top_emoji = st.text_input("Emoji top", st.session_state.ui_top_emoji, max_chars=3)
+    st.session_state.ui_theme = st.selectbox("Tema", list(UI_PRESETS.keys()), index=list(UI_PRESETS.keys()).index(st.session_state.ui_theme) if st.session_state.ui_theme in UI_PRESETS else 0)
+    st.session_state.ui_show_zones = st.toggle("Mostra supporti / resistenze / supply-demand", value=st.session_state.ui_show_zones)
+    st.session_state.ui_show_break_phrase = st.toggle('Mostra frase "Se rompe..."', value=st.session_state.ui_show_break_phrase)
+    st.session_state.ui_big_buttons = st.toggle("Pulsanti grandi", value=st.session_state.ui_big_buttons)
+    st.session_state.ui_rounded = st.toggle("Bordi arrotondati", value=st.session_state.ui_rounded)
+    st.session_state.ui_compact = st.toggle("Modalità compatta", value=st.session_state.ui_compact)
+    if st.button("↩️ Ripristina", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            if key.startswith("ui_"):
+                del st.session_state[key]
+        st.rerun()
 
-def settings_panel(location="sidebar"):
-    target = st.sidebar if location == "sidebar" else st
-    with target.expander(f"{st.session_state.ui_settings_emoji} Impostazioni App", expanded=False):
-        st.session_state.ui_app_name = st.text_input("Nome app", st.session_state.ui_app_name, key=f"{location}_name")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.session_state.ui_main_emoji = st.text_input("Emoji titolo", st.session_state.ui_main_emoji, max_chars=3, key=f"{location}_main_emoji")
-            st.session_state.ui_radar_emoji = st.text_input("Emoji radar", st.session_state.ui_radar_emoji, max_chars=3, key=f"{location}_radar_emoji")
-            st.session_state.ui_coin_emoji = st.text_input("Emoji coin", st.session_state.ui_coin_emoji, max_chars=3, key=f"{location}_coin_emoji")
-        with c2:
-            st.session_state.ui_search_emoji = st.text_input("Emoji ricerca", st.session_state.ui_search_emoji, max_chars=3, key=f"{location}_search_emoji")
-            st.session_state.ui_top_emoji = st.text_input("Emoji top", st.session_state.ui_top_emoji, max_chars=3, key=f"{location}_top_emoji")
-            st.session_state.ui_settings_emoji = st.text_input("Emoji impostazioni", st.session_state.ui_settings_emoji, max_chars=3, key=f"{location}_settings_emoji")
-        st.session_state.ui_theme = st.selectbox("Tema", list(UI_PRESETS.keys()), index=list(UI_PRESETS.keys()).index(st.session_state.ui_theme), key=f"{location}_theme")
-        st.session_state.ui_show_zones = st.toggle("Mostra supply / demand", value=st.session_state.ui_show_zones, key=f"{location}_zones")
-        st.session_state.ui_show_break_phrase = st.toggle('Mostra frase "Se rompe..."', value=st.session_state.ui_show_break_phrase, key=f"{location}_phrase")
-        st.session_state.ui_dummies = st.toggle("Modalità Dummies", value=st.session_state.ui_dummies, key=f"{location}_dummies")
-        st.session_state.ui_big_buttons = st.toggle("Pulsanti grandi", value=st.session_state.ui_big_buttons, key=f"{location}_big")
-        st.session_state.ui_rounded = st.toggle("Bordi arrotondati", value=st.session_state.ui_rounded, key=f"{location}_round")
-        st.session_state.ui_compact = st.toggle("Modalità compatta", value=st.session_state.ui_compact, key=f"{location}_compact")
-        if st.button("↩️ Ripristina impostazioni", use_container_width=True, key=f"{location}_reset"):
-            for k, v in DEFAULT_UI.items():
-                st.session_state["ui_"+k] = v
-            st.rerun()
+ui = UI_PRESETS[st.session_state.ui_theme]
+radius = "16px" if st.session_state.ui_rounded else "4px"
+btn_pad = "0.8rem 1rem" if st.session_state.ui_big_buttons else "0.45rem 0.7rem"
+main_pad = "1.2rem 2rem" if st.session_state.ui_compact else "2rem 4rem"
 
-def verdict_from_score(score):
-    try: score = int(score)
-    except Exception: score = 0
-    if score >= 82: return "🟢 PARTY VERO"
-    if score >= 65: return "🟡 BUONO"
-    if score >= 45: return "🟠 ASPETTA"
-    return "🔴 NON ENTRARE"
-
-def render_title():
-    st.title(f"{st.session_state.ui_main_emoji} {st.session_state.ui_app_name}")
-    st.caption("Versione V7.3: fix dati multi-fonte, radar debug e grafico pulito.")
-
-
-def render_premium_summary(row):
-    phrase = row.get("Frase Dummies", build_break_phrase(row))
-    score = row.get("BR Score", 0)
-    verdict = verdict_from_score(score)
-    card_class = "party-card" if score >= 65 else "danger-card"
-    st.markdown(f"""
-    <div class="{card_class}">
-        <div style="font-size:1.45rem;font-weight:900;margin-bottom:.35rem;">{phrase}</div>
-        <div style="font-size:1.05rem;font-weight:800;">{verdict} &nbsp; | &nbsp; Score {score}/100 &nbsp; | &nbsp; Volume {row.get('Volume Booster','--')}x</div>
-    </div>
-    """, unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
-    c1.warning(f"🔴 **SUPPLY / Resistenza**\n\n{row.get('Supply Zone', 'N/A')}")
-    c2.success(f"🟢 **DEMAND / Supporto**\n\n{row.get('Demand Zone', 'N/A')}")
-    c3.info(f"🎯 **Livello BREAK**\n\n{format_level(row.get('Livello BR', np.nan))}")
-    e1, e2, e3, e4 = st.columns(4)
-    e1.metric("📊 Entry", format_level(row.get("Entry", np.nan)))
-    e2.metric("🛑 Stop", format_level(row.get("SL", np.nan)))
-    e3.metric("💰 TP1", format_level(row.get("TP1", np.nan)))
-    e4.metric("⏱️ Timing", row.get("Tempo", "N/A"))
-
-def render_coin_analyzer(prefix_key="coin"):
-    st.markdown(f"### {st.session_state.ui_coin_emoji} Analizza una coin")
-    c_box1, c_box2, c_box3 = st.columns([2, 1, 1])
-    with c_box1:
-        search_input = st.text_input("Ticker", value="BTC", placeholder="BTC, SOL, AERO...", key=f"{prefix_key}_ticker").upper().strip()
-    with c_box2:
-        search_tf = st.selectbox("Timeframe", TIMEFRAMES, index=TIMEFRAMES.index("15m"), key=f"{prefix_key}_tf")
-    with c_box3:
-        search_dir = st.selectbox("Direzione", ["LONG", "SHORT"], index=0, key=f"{prefix_key}_dir")
-    c_btn1, c_btn2 = st.columns([1,1])
-    with c_btn1:
-        run = st.button("🔎 Analizza", type="primary", use_container_width=True, key=f"{prefix_key}_run")
-    with c_btn2:
-        addfav = st.button("⭐ Aggiungi ai preferiti", use_container_width=True, key=f"{prefix_key}_fav")
-    fmt_input = search_input if search_input.endswith("USDT") else f"{search_input}USDT"
-    if addfav and fmt_input not in st.session_state.favorites:
-        st.session_state.favorites.append(fmt_input)
-        st.success(f"{fmt_input} aggiunta ai preferiti")
-    if run or search_input:
-        with st.spinner(f"Analisi in corso per {fmt_input}..."):
-            s_df, s_sym = fetch_ohlcv_safe(fmt_input, search_tf, limit=250)
-            if s_df is not None:
-                s_row, s_analyzed_df, s_levels = analyze_br(s_df, fmt_input, search_tf, 1.8, 1.0, 0.35, require_breakout=False, direction=search_dir)
-                if s_row:
-                    render_premium_summary(s_row)
-                    st.plotly_chart(draw_chart(s_analyzed_df, fmt_input, s_levels, s_row), use_container_width=True, key=f"{prefix_key}_chart")
-                    with st.expander("Dettagli tecnici"):
-                        st.write(s_row)
-                else:
-                    st.warning("Dati caricati, ma nessun livello utile trovato.")
-            else:
-                st.error(f"Impossibile caricare dati per {fmt_input}. Prova ETH o SOL, oppure cambia timeframe. Se succede ancora, mandami i log Streamlit.")
-
-
-def render_radar(prefix_key="radar"):
-    st.markdown(f"### {st.session_state.ui_radar_emoji} Radar automatico")
-    st.info("V7.3 Debug: se una coin non carica, ora lo vedi nella tabella debug.")
-
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        chosen_timeframe = st.selectbox("Timeframe Radar", TIMEFRAMES, index=TIMEFRAMES.index("15m"), key=f"{prefix_key}_tf")
-        trade_direction = st.selectbox("Direzione Radar", ["LONG", "SHORT"], index=0, key=f"{prefix_key}_dir")
-    with f2:
-        category_options = ["YouHodler List", "Tutti i 444 Asset"] + [k for k in BYBIT_444_DATABASE.keys() if k != "YouHodler List"]
-        category_selector = st.selectbox("Categoria", category_options, index=0, key=f"{prefix_key}_cat")
-        max_assets = st.slider("Numero massimo coin", 5, 444, 20, step=5, key=f"{prefix_key}_max")
-    with f3:
-        volume_hot = st.slider("Volume minimo", 1.0, 5.0, 1.0, step=0.1, key=f"{prefix_key}_vol")
-        min_score = st.slider("Score minimo", 0, 100, 0, step=5, key=f"{prefix_key}_score")
-
-    require_breakout = st.toggle("Solo rottura già fatta", value=False, key=f"{prefix_key}_break")
-    show_debug = st.toggle("Mostra debug radar", value=True, key=f"{prefix_key}_debug")
-
-    if st.button("🔄 Avvia scansione radar", type="primary", use_container_width=True, key=f"{prefix_key}_scan"):
-        current_tickers = list(ALL_TICKERS) if category_selector == "Tutti i 444 Asset" else BYBIT_444_DATABASE.get(category_selector, [])
-        current_tickers = current_tickers[:max_assets]
-        rows, cache, debug_rows = [], {}, []
-        progress = st.progress(0)
-        status = st.empty()
-
-        for i, ticker in enumerate(current_tickers, start=1):
-            status.write(f"Scansiono {ticker}... {i}/{len(current_tickers)}")
-            try:
-                df, used_symbol = fetch_ohlcv_safe(ticker, chosen_timeframe, limit=280)
-                if df is None or df.empty:
-                    debug_rows.append({"Ticker": ticker, "Stato": "NO DATA", "Errore": "nessun dato"})
-                    progress.progress(i / max(len(current_tickers), 1))
-                    continue
-
-                row, analyzed_df, levels = analyze_br(df, ticker, chosen_timeframe, volume_hot, 1.0, 0.35, require_breakout=require_breakout, direction=trade_direction)
-
-                if row is None:
-                    last_close = float(df["Close"].iloc[-1]) if "Close" in df and len(df) else np.nan
-                    debug_rows.append({"Ticker": ticker, "Stato": "LETTA MA NO SETUP", "Errore": f"close={format_level(last_close)}"})
-                    progress.progress(i / max(len(current_tickers), 1))
-                    continue
-
-                row["Verdetto"] = verdict_from_score(row.get("BR Score", 0))
-                rows.append(row)
-                cache[ticker] = {"df": analyzed_df, "levels": levels, "row": row, "symbol": used_symbol}
-                debug_rows.append({"Ticker": ticker, "Stato": "OK", "Errore": ""})
-
-            except Exception as e:
-                debug_rows.append({"Ticker": ticker, "Stato": "ERRORE", "Errore": str(e)[:180]})
-
-            progress.progress(i / max(len(current_tickers), 1))
-
-        progress.empty()
-        status.empty()
-
-        df_rows = pd.DataFrame(rows)
-        if not df_rows.empty and "BR Score" in df_rows.columns:
-            df_rows = df_rows[df_rows["BR Score"] >= min_score].sort_values(["BR Score", "Volume Booster"], ascending=[False, False]).reset_index(drop=True)
-
-        st.session_state.scan_rows = df_rows
-        st.session_state.scan_cache = cache
-        st.session_state.scan_debug = pd.DataFrame(debug_rows)
-        st.success(f"Scansione finita: {len(rows)} setup trovati su {len(current_tickers)} coin.")
-
-    df_display = st.session_state.get("scan_rows", pd.DataFrame())
-    debug_df = st.session_state.get("scan_debug", pd.DataFrame())
-
-    if df_display is None or df_display.empty:
-        st.warning("Nessun setup nella tabella principale. Guarda il debug sotto.")
-        if show_debug and debug_df is not None and not debug_df.empty:
-            st.markdown("### 🛠️ Debug scansione")
-            st.dataframe(debug_df, use_container_width=True, hide_index=True, height=320)
-    else:
-        cols = [c for c in ["Ticker","Direzione","Verdetto","Situazione","Frase Dummies","BR Score","Volume Booster","Livello BR"] if c in df_display.columns]
-        st.markdown("### 📋 Risultati radar")
-        st.dataframe(df_display[cols], use_container_width=True, hide_index=True, height=360)
-
-        ticker_scelto = st.selectbox("Apri grafico coin", df_display["Ticker"].tolist(), key=f"{prefix_key}_select_coin")
-        pack = st.session_state.scan_cache.get(ticker_scelto)
-        if pack:
-            row = pack["row"]
-            render_premium_summary(row)
-            st.plotly_chart(draw_chart(pack["df"], ticker_scelto, pack["levels"], row), use_container_width=True, key=f"{prefix_key}_radar_chart")
-
-        if show_debug and debug_df is not None and not debug_df.empty:
-            with st.expander("🛠️ Debug scansione"):
-                st.dataframe(debug_df, use_container_width=True, hide_index=True, height=280)
-
-
-def render_home():
-    st.markdown(f"### {st.session_state.ui_top_emoji} Home")
-    st.markdown("""
-    <div class="party-card">
-        <b>📱 Versione V7.3 Mobile/PWA pronta.</b><br>
-        Apri questa app da Android o iPhone e usa "Aggiungi alla schermata Home".
-    </div>
-    """, unsafe_allow_html=True)
-    h1, h2, h3 = st.columns(3)
-    h1.metric("🟢 PARTY VERO", "Score ≥ 82")
-    h2.metric("🟡 BUONO", "65 - 81")
-    h3.metric("🔴 NON ENTRARE", "< 45")
-    if st.session_state.favorites:
-        st.write("⭐ **Preferiti rapidi:**")
-        cols = st.columns(min(4, len(st.session_state.favorites)))
-        for i, fav in enumerate(st.session_state.favorites[:4]):
-            cols[i % len(cols)].metric(fav, "Vai in Coin")
-    st.markdown("#### Regola d'oro")
-    st.write("Non entrare perché il prezzo si muove. Entra solo quando rompe il livello giusto con volume e struttura chiara.")
-
-def render_favorites():
-    st.markdown("### ⭐ Preferiti")
-    fav_text = st.text_area("Lista coin preferite, una per riga", value="\n".join(st.session_state.favorites), height=160)
-    if st.button("💾 Salva preferiti", use_container_width=True):
-        st.session_state.favorites = [x.strip().upper() for x in fav_text.splitlines() if x.strip()]
-        st.success("Preferiti salvati per questa sessione.")
-    st.write(st.session_state.favorites)
-
-apply_css()
-
-st.markdown("""
+st.markdown(f"""
 <style>
-@media (max-width: 768px) {
-    .block-container {padding: 0.75rem 0.75rem !important;}
-    h1 {font-size: 2rem !important; line-height: 1.1 !important;}
-    h2, h3 {font-size: 1.35rem !important;}
-    [data-testid="stMetric"] {padding: 0.75rem !important;}
-    div.stButton > button {min-height: 52px !important; font-size: 1rem !important;}
-    .stTabs [data-baseweb="tab-list"] {gap: 0.2rem !important; overflow-x: auto !important;}
-    .stTabs [data-baseweb="tab"] {padding: 0.75rem 0.75rem !important; white-space: nowrap !important;}
-}
-.party-card {
-    background: linear-gradient(135deg, rgba(0,230,118,.10), rgba(56,189,248,.06));
-    border: 1px solid rgba(0,230,118,.45);
-    border-radius: 18px;
-    padding: 1rem;
-    margin: .6rem 0;
-}
-.danger-card {
-    background: linear-gradient(135deg, rgba(255,75,75,.12), rgba(250,204,21,.04));
-    border: 1px solid rgba(255,75,75,.45);
-    border-radius: 18px;
-    padding: 1rem;
-    margin: .6rem 0;
-}
+.stApp {{background:{ui['bg']} !important; color:{ui['text']} !important;}}
+.block-container {{padding:{main_pad} !important;}}
+section[data-testid="stSidebar"] {{background:{ui['sidebar']} !important; border-right:1px solid {ui['accent']}66 !important;}}
+section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3,
+section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span {{
+    color:{ui['text']} !important;
+}}
+h1, h2, h3, h4, h5, h6, p, label {{color:{ui['text']} !important;}}
+[data-testid="stMetric"], div[data-testid="stAlert"], div[data-testid="stExpander"] {{
+    background:{ui['card']} !important; border-radius:{radius} !important; border:1px solid {ui['accent']}33 !important;
+}}
+div.stButton > button {{
+    background:{ui['button']} !important; color:{ui['text']} !important; border:1px solid {ui['accent']} !important;
+    border-radius:{radius} !important; padding:{btn_pad} !important; font-weight:800 !important;
+}}
+div.stButton > button:hover {{background:{ui['accent']} !important; color:#000 !important;}}
+hr {{border-color:{ui['accent']}55 !important;}}
+a {{color:{ui['accent']} !important;}}
 </style>
 """, unsafe_allow_html=True)
 
-render_title()
+APP_TITLE = f"{st.session_state.ui_main_emoji} {st.session_state.ui_app_name}"
+RADAR_EMOJI = st.session_state.ui_radar_emoji
+SEARCH_EMOJI = st.session_state.ui_search_emoji
+TOP_EMOJI = st.session_state.ui_top_emoji
+# ====================================================================
 
-tab_home, tab_coin, tab_radar, tab_fav, tab_settings = st.tabs([
-    "🏠 Home", "🪙 Coin", "📡 Radar", "⭐ Preferiti", "⚙️ Impostazioni"
-])
+st.title(APP_TITLE)
 
-with tab_home:
-    render_home()
-with tab_coin:
-    render_coin_analyzer("tabs_coin")
-with tab_radar:
-    render_radar("tabs_radar")
-with tab_fav:
-    render_favorites()
-with tab_settings:
-    settings_panel("top")
+with st.sidebar:
+    st.header("🎛️ Comandi Radar")
+    chosen_timeframe = st.selectbox("Timeframe Radar", TIMEFRAMES, index=TIMEFRAMES.index("15m"))
+    trade_direction = st.selectbox("Direzione Radar", ["LONG", "SHORT"], index=0)
+    category_options = ["YouHodler List", "Tutti i 444 Asset"] + [k for k in BYBIT_444_DATABASE.keys() if k not in ["YouHodler List"]]
+    category_selector = st.selectbox("Categoria Database", category_options, index=0)
+    st.caption(f"Coin nella categoria selezionata: {len(BYBIT_444_DATABASE.get(category_selector, YOUHODLER_LIST)) if category_selector != 'Tutti i 444 Asset' else len(ALL_TICKERS)}")
+    max_assets = st.slider("Numero massimo coin da scansionare", 10, 444, 80, step=10)
+    volume_hot = st.slider("Volume minimo per PARTY", 1.1, 5.0, 1.8, step=0.1)
+    distance_watch = st.slider("Distanza max dal BR (%)", 0.1, 5.0, 1.0, step=0.1)
+    retest_tol = st.slider("Tolleranza retest (%)", 0.05, 1.5, 0.35, step=0.05)
+    min_score = st.slider("BR Score minimo in tabella", 0, 100, 25, step=5)
+    require_breakout = st.toggle("Mostra solo trade con rottura già fatta", value=True)
+
+# ==================== SEZIONE NUOVA: BOX DI RICERCA RAPIDO ON-DEMAND ====================
+st.markdown(f"### {SEARCH_EMOJI} RICERCA ISTANTANEA DIRETTA (Single Ticker On-Demand)")
+st.caption("Usa questo box per analizzare al volo una coin specifica a tua scelta, senza toccare lo scanner generale.")
+
+c_box1, c_box2, c_box3 = st.columns([2, 1, 1])
+with c_box1:
+    search_input = st.text_input("Inserisci Ticker Singolo (es. SOL, RENDER, BTC, DOGE):", value="").upper().strip()
+with c_box2:
+    search_tf = st.selectbox("Timeframe Ricerca Diretta", TIMEFRAMES, index=TIMEFRAMES.index("15m"), key="s_tf")
+with c_box3:
+    search_dir = st.selectbox("Direzione Ricerca Diretta", ["LONG", "SHORT"], index=0, key="s_dir")
+
+if search_input:
+    fmt_input = search_input if search_input.endswith("USDT") else f"{search_input}USDT"
+    with st.spinner(f"Analisi flash in corso per {fmt_input}..."):
+        s_df, s_sym = fetch_ohlcv_safe(fmt_input, search_tf, limit=250)
+        if s_df is not None:
+            s_row, s_analyzed_df, s_levels = analyze_br(s_df, fmt_input, search_tf, volume_hot, distance_watch, retest_tol, require_breakout=False, direction=search_dir)
+            if s_row:
+                st.markdown(f"#### 📊 Scheda Rapida: {fmt_input} ({search_tf})")
+                sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+                sm1.metric("Situazione", s_row["Situazione"])
+                sm2.metric("BR Score", f"{s_row['BR Score']}/100")
+                sm3.metric("Volume Attuale", f"{s_row['Volume Booster']}x")
+                sm4.metric("Direzione", s_row["Direzione"])
+                sm5.metric("Operatività", s_row["Tempo"])
+                
+                if st.session_state.get("ui_show_break_phrase", True):
+                    st.success(f"### {s_row.get('Frase Dummies', build_break_phrase(s_row))}")
+                z1, z2, z3 = st.columns(3)
+                z1.warning(f"🔴 **Supply / Resistenza**\n\n{s_row.get('Supply Zone', 'N/A')}")
+                z2.success(f"🟢 **Demand / Supporto**\n\n{s_row.get('Demand Zone', 'N/A')}")
+                z3.info(f"🎯 **Livello da guardare**\n\n{format_level(s_row.get('Livello BR', np.nan))}")
+                st.info(f"💡 **Motivazione Confluenze:** {s_row['Perché']}")
+                
+                st_c1, st_c2, st_c3, st_c4 = st.columns(4)
+                st_c1.info(f"📊 **Entry Consigliata:** {s_row['Entry']:.6f}")
+                st_c2.warning(f"🎯 **Livello Chiave BR:** {s_row['Livello BR']:.6f}" if pd.notna(s_row['Livello BR']) else "🎯 **Livello:** N/A")
+                st_c3.error(f"🛑 **Stop Loss (SL):** {s_row['SL']:.6f}" if pd.notna(s_row['SL']) else "🛑 **SL:** N/A")
+                st_c4.success(f"💰 **Take Profit 1 (TP1):** {s_row['TP1']:.6f}" if pd.notna(s_row['TP1']) else "💰 **TP1:** N/A")
+                
+                st.plotly_chart(draw_chart(s_analyzed_df, fmt_input, s_levels, s_row), use_container_width=True, key="search_chart")
+        else:
+            st.error(f"❌ Impossibile caricare i dati per '{search_input}'. Verifica che sia scambiato USDT su Bybit.")
+
+st.markdown("---")
+
+# ==================== STRUTTURA RADAR DI MASSA ORIGINALE ====================
+st.markdown(f"### {RADAR_EMOJI} RADAR MULTI-ASSET GENERALE")
+
+current_tickers = list(ALL_TICKERS) if category_selector == "Tutti i 444 Asset" else BYBIT_444_DATABASE.get(category_selector, YOUHODLER_LIST)
+current_tickers = current_tickers[:max_assets]
+
+col_a, col_b, col_c = st.columns([1,1,2])
+with col_a:
+    run_scan = st.button("🔄 AVVIA SCANSIONE RADAR DI MASSA", type="primary", use_container_width=True)
+with col_b:
+    st.metric("TF attivo Radar", chosen_timeframe)
+with col_c:
+    st.info(f"Filtri Radar -> Direzione: {trade_direction} | Categoria: {category_selector}")
+
+if run_scan:
+    rows = []
+    cache = {}
+    progress = st.progress(0)
+    status = st.empty()
+    total = len(current_tickers)
+    for i, ticker in enumerate(current_tickers, start=1):
+        status.write(f"Scansiono {ticker}... {i}/{total}")
+        df, used_symbol = fetch_ohlcv_safe(ticker, chosen_timeframe, limit=280)
+        if df is not None:
+            try:
+                row, analyzed_df, levels = analyze_br(df, ticker, chosen_timeframe, volume_hot, distance_watch, retest_tol, require_breakout=require_breakout, direction=trade_direction)
+                if row:
+                    rows.append(row)
+                    cache[ticker] = {"df": analyzed_df, "levels": levels, "row": row, "symbol": used_symbol}
+            except Exception:
+                pass
+        progress.progress(i / total)
+    progress.empty()
+    status.empty()
+    
+    if rows:
+        out = pd.DataFrame(rows)
+        out = out[out["BR Score"] >= min_score].sort_values(["BR Score", "Volume Booster", "Distanza dal PARTY %"], ascending=[False, False, True]).reset_index(drop=True)
+        st.session_state.scan_rows = out
+        st.session_state.scan_cache = cache
+    else:
+        st.session_state.scan_rows = pd.DataFrame()
+        st.session_state.scan_cache = {}
+
+df_display = st.session_state.scan_rows
+
+if df_display.empty:
+    st.info("💡 Nessun dato caricato nel Radar. Premi il pulsante sopra 'AVVIA SCANSIONE RADAR DI MASSA' per popolare la tabella dei 444 asset.")
+else:
+    top = df_display.head(5)[["Ticker", "Direzione", "Situazione", "Frase Dummies", "Party Meter", "BR Score", "Volume Booster"]] if "Frase Dummies" in df_display.columns else df_display.head(5)[["Ticker", "Direzione", "Situazione", "Party Meter", "BR Score", "Volume Booster"]]
+    st.subheader(f"{TOP_EMOJI} Top 5 Active Crypto")
+    st.dataframe(top, use_container_width=True, hide_index=True)
+
+    st.subheader("📋 Griglia Scanner Completa")
+    st.dataframe(
+        df_display,
+        use_container_width=True,
+        height=380,
+        hide_index=True,
+        column_config={
+            "TradingView": st.column_config.LinkColumn("TradingView", display_text="Apri TV ↗"),
+            "Party Meter": st.column_config.ProgressColumn("Party Meter", min_value=0, max_value=10),
+            "BR Score": st.column_config.ProgressColumn("BR Score", min_value=0, max_value=100),
+            "Distanza dal PARTY %": st.column_config.NumberColumn(format="%.3f%%"),
+            "Volume Booster": st.column_config.NumberColumn(format="%.2fx"),
+            "Livello BR": st.column_config.NumberColumn(format="%.8f"),
+            "Entry": st.column_config.NumberColumn(format="%.8f"),
+            "SL": st.column_config.NumberColumn(format="%.8f"),
+            "TP1": st.column_config.NumberColumn(format="%.8f"),
+            "TP2": st.column_config.NumberColumn(format="%.8f"),
+        }
+    )
+
+    # SISTEMA DI AGGIORNAMENTO GRAFICO AD ALTA STABILITÀ SENZA RISCHIO SCHERMATA BIANCA
+    st.markdown("#### 📈 Seleziona l'Asset Scansionato per visualizzare il Grafico Plotly")
+    lista_coin_disponibili = df_display["Ticker"].tolist()
+    ticker_scelto = st.selectbox("Scegli quale coin analizzare sotto:", lista_coin_disponibili, index=0)
+
+    pack = st.session_state.scan_cache.get(ticker_scelto)
+    if pack:
+        row = pack["row"]
+        st.subheader(f"📊 Scheda Tecnica Dummies Radar: {ticker_scelto}")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("Situazione", row["Situazione"])
+        c2.metric("Party Meter", f"{row['Party Meter']}/10")
+        c3.metric("Volume Attuale", f"{row['Volume Booster']}x")
+        c4.metric("Distanza Livello", f"{row['Distanza dal PARTY %']}%")
+        c5.metric("Tempo / Timing", row["Tempo"])
+        if st.session_state.get("ui_show_break_phrase", True):
+            st.success(f"### {row.get('Frase Dummies', build_break_phrase(row))}")
+        zz1, zz2, zz3 = st.columns(3)
+        zz1.warning(f"🔴 **Supply / Resistenza**\n\n{row.get('Supply Zone', 'N/A')}")
+        zz2.success(f"🟢 **Demand / Supporto**\n\n{row.get('Demand Zone', 'N/A')}")
+        zz3.info(f"🎯 **Livello chiave**\n\n{format_level(row.get('Livello BR', np.nan))}")
+        st.write(f"**Perché:** {row['Perché']}")
+        st.plotly_chart(draw_chart(pack["df"], ticker_scelto, pack["levels"], row), use_container_width=True, key="radar_chart")
