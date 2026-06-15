@@ -5,7 +5,6 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import time
-import requests
 
 # ================================================================
 #  NO BR NO PARTY SCANNER - COMPLETE & DEBUGGED EDITION
@@ -66,111 +65,17 @@ def clean_ticker_for_api(t: str):
         f"{no_prefix}/USDT", f"{no_prefix}/USDT:USDT", f"1000{no_prefix}/USDT:USDT"
     ]
 
-
-def fetch_ohlcv_safe(symbol: str, timeframe: str, limit: int = 250):
-    """
-    V4.2.2 FIX DATI:
-    usa OKX come fonte principale, poi Bybit, poi CCXT.
-    Serve perché su Streamlit Cloud alcune API crypto possono non rispondere.
-    """
-    raw = (symbol or "").upper().strip()
-    if not raw:
-        return None, symbol
-
-    base = raw.replace("USDT", "").replace("/", "").replace(":USDT", "").replace(".P", "").strip()
-    symbol_usdt = f"{base}USDT"
-
-    def _standardize(df):
-        if df is None or df.empty:
-            return None
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
-        df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms", errors="coerce")
-        df = df[["Timestamp", "Open", "High", "Low", "Close", "Volume", "Date"]].dropna().reset_index(drop=True)
-        return df if not df.empty else None
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 NO-BR-NO-PARTY",
-        "Accept": "application/json"
-    }
-
-    # 1) OKX REST: molto stabile su Streamlit Cloud
-    try:
-        okx_bar_map = {
-            "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
-            "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
-            "1d": "1D"
-        }
-        bar = okx_bar_map.get(timeframe, "15m")
-        okx_candidates = [f"{base}-USDT-SWAP", f"{base}-USDT"]
-        for inst_id in okx_candidates:
-            try:
-                url = "https://www.okx.com/api/v5/market/candles"
-                params = {"instId": inst_id, "bar": bar, "limit": min(int(limit), 300)}
-                r = requests.get(url, params=params, headers=headers, timeout=15)
-                j = r.json()
-                rows = j.get("data", [])
-                if rows:
-                    # OKX: [ts,o,h,l,c,vol,volCcy,volCcyQuote,confirm], newest first
-                    rows = list(reversed(rows))
-                    data = []
-                    for x in rows:
-                        data.append([x[0], x[1], x[2], x[3], x[4], x[5]])
-                    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    df = _standardize(df)
-                    if df is not None:
-                        return df, symbol_usdt
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # 2) Bybit REST linear + spot
-    try:
-        tf_map = {
-            "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
-            "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
-            "1d": "D", "1w": "W"
-        }
-        interval = tf_map.get(timeframe, timeframe.replace("m", "").replace("h", ""))
-        for category in ["linear", "spot"]:
-            try:
-                url = "https://api.bybit.com/v5/market/kline"
-                params = {"category": category, "symbol": symbol_usdt, "interval": interval, "limit": min(int(limit), 1000)}
-                r = requests.get(url, params=params, headers=headers, timeout=15)
-                j = r.json()
-                rows = j.get("result", {}).get("list", [])
-                if rows:
-                    rows = list(reversed(rows))
-                    df = pd.DataFrame(rows, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume", "Turnover"])
-                    df = _standardize(df)
-                    if df is not None:
-                        return df, symbol_usdt
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    # 3) CCXT fallback
-    try:
-        ex = get_exchange_client()
-        candidates = [f"{base}/USDT:USDT", f"{base}/USDT", symbol_usdt, raw]
-        for candidate in candidates:
-            try:
-                data = ex.fetch_ohlcv(candidate, timeframe=timeframe, limit=limit)
-                if data:
-                    df = pd.DataFrame(data, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
-                    df = _standardize(df)
-                    if df is not None:
-                        return df, symbol_usdt
-            except Exception:
-                continue
-    except Exception:
-        pass
-
-    return None, symbol_usdt
-
+def fetch_ohlcv_safe(display_ticker: str, timeframe: str, limit: int = 260):
+    for symbol in clean_ticker_for_api(display_ticker):
+        try:
+            candles = bybit.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+            if candles and len(candles) > 80:
+                df = pd.DataFrame(candles, columns=["Timestamp", "Open", "High", "Low", "Close", "Volume"])
+                df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms")
+                return df, symbol
+        except Exception:
+            continue
+    return None, None
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -390,112 +295,42 @@ def level_zone_text(center, width):
     return f"{format_level(lo)} - {format_level(hi)}"
 
 
-
 def draw_chart(df: pd.DataFrame, ticker: str, levels, row):
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.04, row_heights=[0.78, 0.22])
+    fig.add_trace(go.Candlestick(x=df["Date"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Prezzo"), row=1, col=1)
+    for col, name in [("EMA5", "EMA 5"), ("EMA10", "EMA 10"), ("EMA60", "EMA 60"), ("EMA223", "EMA 223"), ("VWAP", "VWAP"), ("MVWAP", "MVWAP")]:
+        if col in df: fig.add_trace(go.Scatter(x=df["Date"], y=df[col], name=name, line=dict(width=1.2)), row=1, col=1)
 
-    fig.add_trace(go.Candlestick(
-        x=df["Date"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        name="Prezzo",
-        increasing_line_color="#00E676", decreasing_line_color="#FF4B4B",
-        increasing_fillcolor="#00E676", decreasing_fillcolor="#FF4B4B"
-    ), row=1, col=1)
+    atr_last = float(df["ATR"].iloc[-1]) if "ATR" in df and pd.notna(df["ATR"].iloc[-1]) else 0
+    price_last = float(df["Close"].iloc[-1]) if "Close" in df else 0
+    zone_w = max(atr_last * 0.35, price_last * 0.0015) if price_last else 0
 
-    if "EMA60" in df:
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["EMA60"], name="EMA 60", line=dict(width=1.8, color="#A855F7")), row=1, col=1)
-    if "VWAP" in df:
-        fig.add_trace(go.Scatter(x=df["Date"], y=df["VWAP"], name="VWAP", line=dict(width=1.8, color="#38BDF8")), row=1, col=1)
-
-    price = float(df["Close"].iloc[-1])
-    atr_last = float(df["ATR"].iloc[-1]) if "ATR" in df and pd.notna(df["ATR"].iloc[-1]) else price * 0.004
-    zone_w = max(atr_last * 0.25, price * 0.0012)
-
-    resistance_levels = sorted([l for l in levels if l.get("kind") == "res"], key=lambda x: x["value"])
-    support_levels = sorted([l for l in levels if l.get("kind") == "sup"], key=lambda x: x["value"], reverse=True)
-
-    res_above = [l for l in resistance_levels if l["value"] >= price]
-    sup_below = [l for l in support_levels if l["value"] <= price]
-
-    main_res = res_above[0]["value"] if res_above else (resistance_levels[-1]["value"] if resistance_levels else np.nan)
-    main_sup = sup_below[0]["value"] if sup_below else (support_levels[0]["value"] if support_levels else np.nan)
-
-    def add_left_label(y, text, color, yshift=0):
-        if pd.isna(y):
-            return
-        fig.add_annotation(
-            x=df["Date"].iloc[max(1, int(len(df) * 0.06))],
-            y=float(y), text=text, showarrow=True, arrowhead=2,
-            ax=-35, ay=yshift, font=dict(size=12, color="white"),
-            bgcolor=color, bordercolor=color, borderwidth=1, borderpad=4,
-            opacity=0.95, row=1, col=1
-        )
-
-    def add_clean_line(y, color, dash="dash", width=1.5):
-        if pd.isna(y):
-            return
-        fig.add_hline(y=float(y), line_color=color, line_dash=dash, line_width=width, row=1, col=1)
+    res_levels = sorted([l for l in levels if l["kind"] == "res"], key=lambda x: x["value"])
+    sup_levels = sorted([l for l in levels if l["kind"] == "sup"], key=lambda x: x["value"], reverse=True)
 
     if st.session_state.get("ui_show_zones", True):
-        if not pd.isna(main_res):
-            fig.add_hrect(y0=float(main_res)-zone_w, y1=float(main_res)+zone_w,
-                          fillcolor="rgba(255,75,75,0.14)", line_width=0, row=1, col=1)
-            add_clean_line(main_res, "#FF4B4B", "dash", 1.8)
-            add_left_label(main_res, f"🔴 SUPPLY / RESISTENZA {format_level(main_res)}", "#7F1D1D", -10)
-        if not pd.isna(main_sup):
-            fig.add_hrect(y0=float(main_sup)-zone_w, y1=float(main_sup)+zone_w,
-                          fillcolor="rgba(0,230,118,0.12)", line_width=0, row=1, col=1)
-            add_clean_line(main_sup, "#00E676", "dash", 1.8)
-            add_left_label(main_sup, f"🟢 DEMAND / SUPPORTO {format_level(main_sup)}", "#064E3B", 10)
+        for lvl in res_levels[-3:]:
+            fig.add_hrect(y0=lvl["value"]-zone_w, y1=lvl["value"]+zone_w, fillcolor="rgba(255, 0, 70, 0.18)", line_width=0, annotation_text="SUPPLY / RESISTENZA", row=1, col=1)
+        for lvl in sup_levels[:3]:
+            fig.add_hrect(y0=lvl["value"]-zone_w, y1=lvl["value"]+zone_w, fillcolor="rgba(0, 230, 118, 0.15)", line_width=0, annotation_text="DEMAND / SUPPORTO", row=1, col=1)
 
-    entry = row.get("Entry", np.nan)
-    sl = row.get("SL", np.nan)
-    tp1 = row.get("TP1", np.nan)
-    tp2 = row.get("TP2", np.nan)
-    br = row.get("Livello BR", np.nan)
+    for lvl in levels:
+        label = f"{'🧱 Resistenza' if lvl['kind'] == 'res' else '🛟 Supporto'} {'seria' if lvl['power'] == 'A' else 'veloce'}"
+        fig.add_hline(y=lvl["value"], line_width=2 if lvl["power"] == "A" else 1, line_dash="dash", annotation_text=label, row=1, col=1)
 
-    add_clean_line(br, "#FACC15", "solid", 2.4)
-    add_left_label(br, f"🚀 BREAK {format_level(br)}", "#854D0E", 0)
+    if pd.notna(row.get("Livello BR")): fig.add_hline(y=row["Livello BR"], line_width=3, annotation_text="🎉 LIVELLO PARTY / BR-BS", row=1, col=1)
+    for y, label in [(row.get("Entry"), "Entry"), (row.get("SL"), "SL"), (row.get("TP1"), "TP1"), (row.get("TP2"), "TP2")]:
+        if pd.notna(y): fig.add_hline(y=y, line_dash="dot", annotation_text=label, row=1, col=1)
 
-    add_clean_line(entry, "#38BDF8", "dot", 2.0)
-    add_left_label(entry, f"📊 ENTRY {format_level(entry)}", "#075985", -20)
-
-    add_clean_line(sl, "#FF4B4B", "solid", 2.0)
-    add_left_label(sl, f"🛑 STOP {format_level(sl)}", "#7F1D1D", 20)
-
-    add_clean_line(tp1, "#FFFFFF", "dot", 1.7)
-    add_left_label(tp1, f"🎯 TP1 {format_level(tp1)}", "#1F2937", -25)
-
-    add_clean_line(tp2, "#FFFFFF", "dot", 1.7)
-    add_left_label(tp2, f"🎯 TP2 {format_level(tp2)}", "#1F2937", 25)
-
-    phrase = row.get("Frase Dummies", build_break_phrase(row))
-    fig.add_annotation(
-        x=0.02, y=1.08, xref="paper", yref="paper",
-        text=f"<b>{phrase}</b>", showarrow=False,
-        font=dict(size=18, color="#FFFFFF"), bgcolor="rgba(0,0,0,0.75)",
-        bordercolor="#FACC15", borderwidth=1, borderpad=8, align="left"
-    )
-
-    volume_colors = np.where(df["Close"] >= df["Open"], "#00E676", "#FF4B4B")
-    vol_y = df["VolX"] if "VolX" in df else df["Volume"]
-    fig.add_trace(go.Bar(x=df["Date"], y=vol_y, name="Volume", marker_color=volume_colors, opacity=0.85), row=2, col=1)
-    fig.add_hline(y=1.8, line_dash="dash", line_color="#FFFFFF", line_width=1, annotation_text="Volume caldo 1.8x", row=2, col=1)
-
+    fig.add_trace(go.Bar(x=df["Date"], y=df["VolX"], name="Volume Booster x media 20", marker_color="orange"), row=2, col=1)
+    fig.add_hline(y=1.8, line_dash="dash", annotation_text="Volume caldo 1.8x", row=2, col=1)
     fig.update_xaxes(rangeslider_visible=False)
-    fig.update_layout(
-        height=720, template="plotly_dark",
-        plot_bgcolor="#0B0F19", paper_bgcolor="#0B0F19",
-        font=dict(color="white"), margin=dict(l=10, r=10, t=80, b=10),
-        title=f"{ticker} - Grafico pulito stile TradingView"
-    )
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.12)", zeroline=False, row=1, col=1)
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.12)", zeroline=False, row=2, col=1)
+    fig.update_layout(height=700, template="plotly_dark", plot_bgcolor="#0b0f19", paper_bgcolor="#0b0f19", font=dict(color="white"), margin=dict(l=10, r=10, t=35, b=10), title=f"{ticker} - Livelli, Supply/Demand e NO BR NO PARTY")
     return fig
-
 
 # ========================= UI STREAMLIT ===========================
 
-st.set_page_config(page_title="NO BR NO PARTY V4.2.2", layout="wide")
+st.set_page_config(page_title="NO BR NO PARTY Scanner", layout="wide")
 
 # ========================= IMPOSTAZIONI APP =========================
 UI_PRESETS = {
@@ -506,7 +341,7 @@ UI_PRESETS = {
     "Chiaro": {"bg":"#F8FAFC","sidebar":"#FFFFFF","card":"#FFFFFF","accent":"#2563EB","text":"#111827","button":"#E5E7EB"},
 }
 for k, v in {
-    "app_name": "NO BR NO PARTY V4.2.2 - FIX DATI",
+    "app_name": "NO BR NO PARTY Scanner - LONG & SHORT",
     "main_emoji": "🚀",
     "radar_emoji": "📡",
     "search_emoji": "🔍",
@@ -581,9 +416,8 @@ with st.sidebar:
     st.header("🎛️ Comandi Radar")
     chosen_timeframe = st.selectbox("Timeframe Radar", TIMEFRAMES, index=TIMEFRAMES.index("15m"))
     trade_direction = st.selectbox("Direzione Radar", ["LONG", "SHORT"], index=0)
-    category_options = ["YouHodler List", "Tutti i 444 Asset"] + [k for k in BYBIT_444_DATABASE.keys() if k not in ["YouHodler List"]]
+    category_options = ["YouHodler List", "Tutti i 444 Asset"] + [k for k in BYBIT_444_DATABASE.keys() if k != "YouHodler List"]
     category_selector = st.selectbox("Categoria Database", category_options, index=0)
-    st.caption(f"Coin nella categoria selezionata: {len(BYBIT_444_DATABASE.get(category_selector, YOUHODLER_LIST)) if category_selector != 'Tutti i 444 Asset' else len(ALL_TICKERS)}")
     max_assets = st.slider("Numero massimo coin da scansionare", 10, 444, 80, step=10)
     volume_hot = st.slider("Volume minimo per PARTY", 1.1, 5.0, 1.8, step=0.1)
     distance_watch = st.slider("Distanza max dal BR (%)", 0.1, 5.0, 1.0, step=0.1)
@@ -641,7 +475,7 @@ st.markdown("---")
 # ==================== STRUTTURA RADAR DI MASSA ORIGINALE ====================
 st.markdown(f"### {RADAR_EMOJI} RADAR MULTI-ASSET GENERALE")
 
-current_tickers = list(ALL_TICKERS) if category_selector == "Tutti i 444 Asset" else BYBIT_444_DATABASE.get(category_selector, YOUHODLER_LIST)
+current_tickers = list(ALL_TICKERS) if category_selector == "Tutti i 444 Asset" else BYBIT_444_DATABASE[category_selector]
 current_tickers = current_tickers[:max_assets]
 
 col_a, col_b, col_c = st.columns([1,1,2])
